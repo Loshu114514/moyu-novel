@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.aab
+app/src/main/cpp/llama.cpp/
+.idea/
+.DS_Store
