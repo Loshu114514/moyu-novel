@@ -157,6 +157,7 @@ fun defaultEndpoints(): List<ApiEndpoint> = listOf(
         model = "qwen3-max",
         visionModel = "qwen3-vl-plus",
         models = listOf("qwen3-max", "qwen-plus", "qwen3-vl-plus", "qwen3-vl-max"),
+        thinkingParam = true,
         preset = true,
     ),
     ApiEndpoint(

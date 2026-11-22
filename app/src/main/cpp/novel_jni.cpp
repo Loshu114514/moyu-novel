@@ -332,7 +332,7 @@ Java_com_moyu_novel_local_LocalEngine_addAssistantHistory(JNIEnv * env, jobject 
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_moyu_novel_local_LocalEngine_finishAssistant(JNIEnv * env, jobject /*thiz*/, jstring text,
+Java_com_moyu_novel_local_LocalEngine_nativeFinishAssistant(JNIEnv * env, jobject /*thiz*/, jstring text,
                                                       jstring reasoning) {
     if (g_ctx == nullptr) {
         return;
