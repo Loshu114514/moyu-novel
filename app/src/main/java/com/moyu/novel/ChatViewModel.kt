@@ -78,6 +78,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var settingsJob: Job? = null
     private var stopRequested = false
     private var localSession: LocalSession? = null
+    private var lastStreamSave = 0L
 
     init {
         val saved = store.loadConversations().sortedByDescending { it.updatedAt }
@@ -214,6 +215,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversation.updatedAt = System.currentTimeMillis()
         isGenerating = true
         stopRequested = false
+        lastStreamSave = System.currentTimeMillis()
 
         genJob = viewModelScope.launch {
             try {
@@ -287,6 +289,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     assistant.reasoningMs = System.currentTimeMillis() - assistant.reasoningStart
                 }
                 assistant.content += piece
+                maybeStreamSave()
             },
         )
         if (assistant.content.isBlank() && assistant.reasoning.isBlank()) {
@@ -444,6 +447,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     content.append(piece)
                     assistant.content = content.toString()
                 }
+                maybeStreamSave()
             }
         } finally {
             if (state == 0) {
@@ -461,6 +465,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             assistant.content = finalContent
             assistant.reasoning = finalReasoning
             engineStatus = "已加载 · ${engine.description()}"
+        }
+    }
+
+    private fun maybeStreamSave() {
+        val now = System.currentTimeMillis()
+        if (now - lastStreamSave > 5000) {
+            lastStreamSave = now
+            persistSoon()
         }
     }
 

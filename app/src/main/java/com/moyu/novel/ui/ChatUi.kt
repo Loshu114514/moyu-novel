@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -370,6 +371,63 @@ private fun HomeContent(vm: ChatViewModel) {
             color = MoyuTextDim,
             fontSize = 13.sp,
         )
+
+        val endpoint = vm.settings.activeEndpoint()
+        val setupTarget = when {
+            !vm.settings.useLocal && endpoint.apiKey.isBlank() -> com.moyu.novel.Screen.SETTINGS
+            vm.settings.useLocal && vm.settings.localModelPath == null -> com.moyu.novel.Screen.MODELS
+            else -> null
+        }
+        if (setupTarget != null) {
+            Spacer(Modifier.height(18.dp))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.goTo(setupTarget) },
+                color = MoyuBlue.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Outlined.Memory,
+                        contentDescription = null,
+                        tint = MoyuBlue,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = if (setupTarget == com.moyu.novel.Screen.SETTINGS) {
+                                "还没配置 API Key"
+                            } else {
+                                "还没下载本地模型"
+                            },
+                            color = MoyuText,
+                            fontSize = 13.sp,
+                        )
+                        Text(
+                            text = if (setupTarget == com.moyu.novel.Screen.SETTINGS) {
+                                "点这里填 Key，也可以去模型库下载 GGUF 离线跑"
+                            } else {
+                                "点这里挑一个 4B 的 Q4 模型（约 2.5GB）"
+                            },
+                            color = MoyuTextDim,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Icon(
+                        Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MoyuTextDim,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(34.dp))
 
         NOVEL_SUGGESTIONS.chunked(2).forEach { rowItems ->
