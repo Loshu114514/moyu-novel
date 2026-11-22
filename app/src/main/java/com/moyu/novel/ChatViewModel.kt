@@ -31,6 +31,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     val recommendedModels: List<RecommendedModel> get() = hub.recommended
 
+    val activeSource: ModelSource
+        get() = settings.modelSources.firstOrNull { it.id == settings.activeSourceId }
+            ?: settings.modelSources.first()
+
     var settings by mutableStateOf(store.loadSettings())
         private set
 
@@ -524,6 +528,63 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         localModels.addAll(models)
     }
 
+    fun selectModelSource(id: String) {
+        if (settings.activeSourceId == id) return
+        settings = settings.copy(activeSourceId = id)
+        hubModels = emptyList()
+        hubError = null
+        hubFiles.clear()
+        hubLoadingFiles.clear()
+        saveSettingsNow()
+    }
+
+    fun addModelSource(name: String, baseUrl: String) {
+        val cleanName = name.trim()
+        var cleanUrl = baseUrl.trim().trimEnd('/')
+        if (cleanName.isEmpty() || cleanUrl.isEmpty()) {
+            toast = "名称和地址都要填"
+            return
+        }
+        if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            cleanUrl = "https://$cleanUrl"
+        }
+        val source = ModelSource(
+            id = "custom-" + System.currentTimeMillis(),
+            name = cleanName,
+            baseUrl = cleanUrl,
+            kind = ModelSourceKind.HF,
+            preset = false,
+        )
+        settings = settings.copy(
+            modelSources = settings.modelSources + source,
+            activeSourceId = source.id,
+        )
+        hubModels = emptyList()
+        hubError = null
+        hubFiles.clear()
+        hubLoadingFiles.clear()
+        saveSettingsNow()
+        toast = "已添加模型源：$cleanName"
+    }
+
+    fun deleteModelSource(id: String) {
+        val source = settings.modelSources.firstOrNull { it.id == id } ?: return
+        if (source.preset) {
+            toast = "内置模型源不能删除"
+            return
+        }
+        val remaining = settings.modelSources.filterNot { it.id == id }
+        if (remaining.isEmpty()) return
+        val nextId = if (settings.activeSourceId == id) remaining.first().id else settings.activeSourceId
+        settings = settings.copy(modelSources = remaining, activeSourceId = nextId)
+        hubModels = emptyList()
+        hubError = null
+        hubFiles.clear()
+        hubLoadingFiles.clear()
+        saveSettingsNow()
+        toast = "已删除模型源"
+    }
+
     fun selectEndpoint(id: String) {
         settings = settings.copy(activeEndpointId = id, useLocal = false)
         connectionStatus = null
@@ -619,7 +680,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             toast = "这个模型已经在下载队列里了"
             return
         }
-        runCatching { hub.download(repo, file) }
+        val source = activeSource
+        runCatching { hub.download(source, repo, file) }
             .onSuccess { record ->
                 downloads = downloads + record
                 store.saveDownloads(downloads)
@@ -658,8 +720,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun searchHub(query: String) {
         hubLoading = true
         hubError = null
+        val source = activeSource
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { hub.search(query) } }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { hub.search(source, query) }
+            }
             result.onSuccess {
                 hubModels = it
                 hubLoading = false
@@ -673,8 +738,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun loadHubFiles(repo: String) {
         if (hubFiles.containsKey(repo) || hubLoadingFiles[repo] == true) return
         hubLoadingFiles[repo] = true
+        val source = activeSource
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { hub.files(repo) } }
+            val result = withContext(Dispatchers.IO) { runCatching { hub.files(source, repo) } }
             result.onSuccess {
                 hubFiles[repo] = it
                 hubLoadingFiles[repo] = false

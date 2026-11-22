@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,17 +49,50 @@ import androidx.compose.ui.unit.sp
 import com.moyu.novel.ChatViewModel
 import com.moyu.novel.HubFile
 import com.moyu.novel.LocalModel
+import com.moyu.novel.ModelSourceKind
+import com.moyu.novel.Screen
 import com.moyu.novel.formatBytes
+import com.moyu.novel.modelBillions
+import com.moyu.novel.sourceSizeLabel
+
+private val sizeFilters = listOf("全部", "≤3B", "4-8B", "14-32B", "≥70B")
+
+private fun matchesSize(id: String, filter: String): Boolean {
+    if (filter == "全部") return true
+    val billions = modelBillions(id) ?: return false
+    return when (filter) {
+        "≤3B" -> billions <= 3.0
+        "4-8B" -> billions in 4.0..8.0
+        "14-32B" -> billions in 14.0..32.0
+        "≥70B" -> billions >= 70.0
+        else -> true
+    }
+}
 
 @Composable
 fun ModelHubScreen(vm: ChatViewModel) {
     var query by remember { mutableStateOf("") }
     var searched by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf<String?>(null) }
+    var manualRepo by remember { mutableStateOf<String?>(null) }
+    var repoInput by remember { mutableStateOf("") }
+    var sizeFilter by remember { mutableStateOf("全部") }
 
+    LaunchedEffect(vm.settings.activeSourceId) {
+        query = ""
+        searched = false
+        expanded = null
+        manualRepo = null
+        sizeFilter = "全部"
+        vm.searchHub("")
+    }
     LaunchedEffect(expanded) {
         expanded?.let { vm.loadHubFiles(it) }
     }
+
+    val source = vm.activeSource
+    val hubList = vm.hubModels.filter { matchesSize(it.id, sizeFilter) }
+    val recList = vm.recommendedModels.filter { matchesSize(it.repo, sizeFilter) }
 
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
@@ -65,11 +100,56 @@ fun ModelHubScreen(vm: ChatViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(vm.settings.modelSources, key = { it.id }) { modelSource ->
+                    FilterChip(
+                        selected = modelSource.id == vm.settings.activeSourceId,
+                        onClick = { vm.selectModelSource(modelSource.id) },
+                        label = { Text(modelSource.name, fontSize = 12.sp) },
+                    )
+                }
+                item {
+                    TextButton(onClick = { vm.goTo(Screen.SETTINGS) }) {
+                        Text("管理源", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        item {
+            Surface(color = MoyuSurface, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("本地模型库", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "当前源：${source.name} · ${source.baseUrl}",
+                        color = MoyuTextDim,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        "从 0.5B 到 235B 都能搜。4B Q4 约 2.5GB，8B 约 5GB；" +
+                            "70B 以上只建议电脑/大内存设备。下载走系统 DownloadManager，后台也会继续。",
+                        color = MoyuTextDim,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                    )
+                    if (source.kind == ModelSourceKind.MODELSCOPE) {
+                        Text(
+                            "魔搭源使用内置目录（0.5B–235B），也可以直接粘贴任意仓库 ID 打开。",
+                            color = MoyuText.copy(alpha = 0.7f),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = { Text("搜索 GGUF，例如 Qwen3 4B", fontSize = 13.sp) },
+                    placeholder = { Text("搜索 GGUF，例如 Qwen3 32B", fontSize = 13.sp) },
                     singleLine = true,
                     leadingIcon = {
                         Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -91,21 +171,36 @@ fun ModelHubScreen(vm: ChatViewModel) {
         }
 
         item {
-            Surface(color = MoyuSurface, shape = RoundedCornerShape(16.dp)) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("本地模型库", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "模型来自 hf-mirror.com（HuggingFace 国内镜像），下载的是 GGUF 单文件。" +
-                            "4B Q4 约 2.5GB，8GB 内存手机可跑；8B Q4 约 5GB，建议 12GB 内存。",
-                        color = MoyuTextDim,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(sizeFilters, key = { it }) { filter ->
+                    FilterChip(
+                        selected = sizeFilter == filter,
+                        onClick = { sizeFilter = filter },
+                        label = { Text(filter, fontSize = 12.sp) },
                     )
-                    Text(
-                        "下载走系统 DownloadManager，退到后台也会继续。",
-                        color = MoyuTextDim.copy(alpha = 0.7f),
-                        fontSize = 11.sp,
-                    )
+                }
+            }
+        }
+
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = repoInput,
+                    onValueChange = { repoInput = it },
+                    placeholder = { Text("直接打开仓库，如 Qwen/Qwen3-32B-GGUF", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    val repo = repoInput.trim()
+                    if (repo.isNotBlank()) {
+                        manualRepo = repo
+                        expanded = repo
+                        searched = true
+                    }
+                }) {
+                    Text("打开")
                 }
             }
         }
@@ -120,13 +215,8 @@ fun ModelHubScreen(vm: ChatViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(
-                                record.file.substringAfterLast('/'),
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(record.repo, color = MoyuTextDim, fontSize = 10.sp, maxLines = 1)
+                            Text(record.file.substringAfterLast('/'), fontSize = 12.sp, lineHeight = 17.sp)
+                            Text(record.repo, color = MoyuTextDim, fontSize = 10.sp, lineHeight = 15.sp)
                             Spacer(Modifier.size(4.dp))
                             if (progressState != null) {
                                 LinearProgressIndicator(
@@ -173,10 +263,29 @@ fun ModelHubScreen(vm: ChatViewModel) {
             }
         }
 
+        if (manualRepo != null &&
+            hubList.none { it.id == manualRepo } &&
+            recList.none { it.repo == manualRepo }
+        ) {
+            item { SectionTitle("手动打开") }
+            item {
+                RepoCard(
+                    vm = vm,
+                    id = manualRepo!!,
+                    note = "按仓库 ID 打开",
+                    expanded = expanded == manualRepo,
+                    onToggle = {
+                        expanded = if (expanded == manualRepo) null else manualRepo
+                    },
+                )
+            }
+        }
+
         item {
             SectionTitle(
                 when {
                     searched -> "搜索结果"
+                    vm.hubModels.isNotEmpty() -> "热门 GGUF"
                     else -> "推荐模型"
                 },
             )
@@ -199,36 +308,48 @@ fun ModelHubScreen(vm: ChatViewModel) {
             }
         }
 
-        if (searched) {
-            items(vm.hubModels, key = { "hub-" + it.id }) { model ->
+        if (hubList.isNotEmpty()) {
+            items(hubList, key = { "hub-" + it.id }) { model ->
+                val meta = if (model.note.isNotBlank()) {
+                    model.note
+                } else {
+                    "${model.downloads} 次下载 · ${model.likes} 赞"
+                }
                 RepoCard(
                     vm = vm,
                     id = model.id,
-                    note = "${model.downloads} 次下载 · ${model.likes} 赞",
+                    note = meta,
                     expanded = expanded == model.id,
                     onToggle = { expanded = if (expanded == model.id) null else model.id },
                 )
             }
-            if (!vm.hubLoading && vm.hubModels.isEmpty() && vm.hubError == null) {
-                item { Text("没有搜索到模型，换个关键词试试。", color = MoyuTextDim, fontSize = 12.sp) }
-            }
-        } else {
-            items(vm.recommendedModels, key = { "rec-" + it.repo }) { recommended ->
-                RepoCard(
-                    vm = vm,
-                    id = recommended.repo,
-                    note = recommended.note,
-                    expanded = expanded == recommended.repo,
-                    onToggle = {
-                        expanded = if (expanded == recommended.repo) null else recommended.repo
-                    },
-                )
+        } else if (!vm.hubLoading) {
+            if (source.kind == ModelSourceKind.HF && !searched && recList.isNotEmpty()) {
+                items(recList, key = { "rec-" + it.repo }) { recommended ->
+                    RepoCard(
+                        vm = vm,
+                        id = recommended.repo,
+                        note = recommended.note,
+                        expanded = expanded == recommended.repo,
+                        onToggle = {
+                            expanded = if (expanded == recommended.repo) null else recommended.repo
+                        },
+                    )
+                }
+            } else {
+                item {
+                    Text(
+                        "没有符合大小筛选的模型，换个筛选条件或搜索词试试。",
+                        color = MoyuTextDim,
+                        fontSize = 12.sp,
+                    )
+                }
             }
         }
 
         item {
             Text(
-                "提示：下载完成后在「已下载」里点“使用”，回到聊天就能离线生成。模型文件较大，建议在 Wi-Fi 下下载。",
+                "提示：模型名可以完整显示；点仓库展开文件，选 Q4_K_M 最均衡。下载完成后在“已下载”里点“使用”。",
                 color = MoyuTextDim.copy(alpha = 0.7f),
                 fontSize = 11.sp,
                 lineHeight = 17.sp,
@@ -257,6 +378,7 @@ private fun RepoCard(
     expanded: Boolean,
     onToggle: () -> Unit,
 ) {
+    val sizeLabel = sourceSizeLabel(id)
     Surface(color = MoyuSurface, shape = RoundedCornerShape(14.dp)) {
         Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
             Row(
@@ -264,9 +386,14 @@ private fun RepoCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(id, fontSize = 13.sp, maxLines = 2, lineHeight = 18.sp)
+                    Text(id, fontSize = 13.sp, lineHeight = 18.sp)
                     Spacer(Modifier.size(3.dp))
-                    Text(note, color = MoyuTextDim, fontSize = 11.sp, lineHeight = 16.sp)
+                    Text(
+                        text = listOf(sizeLabel, note).filter { it.isNotBlank() }.joinToString(" · "),
+                        color = MoyuTextDim,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
                 }
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
@@ -295,7 +422,7 @@ private fun FilesOfRepo(vm: ChatViewModel, repo: String) {
         return
     }
     if (files == null || files.isEmpty()) {
-        Text("这个仓库没有可用的 GGUF 文件。", color = MoyuTextDim, fontSize = 11.sp)
+        Text("这个仓库没有可用的 GGUF 文件，或需要换个模型源。", color = MoyuTextDim, fontSize = 11.sp)
         return
     }
     files.forEach { file ->
@@ -315,7 +442,7 @@ private fun HubFileRow(repo: String, file: HubFile, vm: ChatViewModel) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(shortName, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(shortName, fontSize = 12.sp, lineHeight = 17.sp)
             Text(
                 formatBytes(file.size) + if (downloaded) " · 已下载" else "",
                 color = if (downloaded) MoyuGreen else MoyuTextDim,
@@ -370,7 +497,7 @@ private fun LocalModelRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text(model.name, fontSize = 12.sp, maxLines = 2, lineHeight = 17.sp)
+                Text(model.name, fontSize = 12.sp, lineHeight = 17.sp)
                 Text(formatBytes(model.size), color = MoyuTextDim, fontSize = 10.sp)
             }
             if (selected) {

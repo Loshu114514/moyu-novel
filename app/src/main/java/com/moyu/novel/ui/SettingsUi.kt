@@ -64,6 +64,9 @@ fun SettingsScreen(vm: ChatViewModel) {
     var keyVisible by remember(endpoint.id) { mutableStateOf(false) }
     var systemPrompt by remember { mutableStateOf(settings.systemPrompt) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showSourceDialog by remember { mutableStateOf(false) }
+    var sourceName by remember { mutableStateOf("") }
+    var sourceUrl by remember { mutableStateOf("") }
 
     fun pushEndpoint() {
         vm.updateEndpoint(
@@ -166,6 +169,48 @@ fun SettingsScreen(vm: ChatViewModel) {
                     "Key 只保存在本机应用目录，不会上传到任何第三方。",
                     color = MoyuTextDim.copy(alpha = 0.7f),
                     fontSize = 11.sp,
+                )
+            }
+        }
+
+        item {
+            Section("模型源") {
+                settings.modelSources.forEach { modelSource ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(modelSource.name, fontSize = 13.sp)
+                            Text(
+                                modelSource.baseUrl,
+                                color = MoyuTextDim,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                            )
+                        }
+                        if (modelSource.preset) {
+                            Text("内置", color = MoyuTextDim, fontSize = 10.sp)
+                        } else {
+                            IconButton(onClick = { vm.deleteModelSource(modelSource.id) }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "删除模型源",
+                                    tint = MoyuTextDim,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                TextButton(onClick = { showSourceDialog = true }) {
+                    Text("+ 添加自定义模型源")
+                }
+                Text(
+                    "自定义源需兼容 HuggingFace 的 /api/models 接口（可填任意镜像地址）。魔搭为内置目录源，覆盖 0.5B–235B。",
+                    color = MoyuTextDim.copy(alpha = 0.75f),
+                    fontSize = 11.sp,
+                    lineHeight = 17.sp,
                 )
             }
         }
@@ -287,7 +332,7 @@ fun SettingsScreen(vm: ChatViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(local.name, fontSize = 13.sp, maxLines = 2)
+                            Text(local.name, fontSize = 13.sp, lineHeight = 18.sp)
                             Text(formatBytes(local.size), color = MoyuTextDim, fontSize = 11.sp)
                         }
                         if (settings.useLocal && settings.localModelPath == local.path) {
@@ -356,7 +401,7 @@ fun SettingsScreen(vm: ChatViewModel) {
 
         item {
             Section("关于") {
-                Text("墨语 1.0.0", fontSize = 14.sp)
+                Text("墨语 1.1.0", fontSize = 14.sp)
                 Text(
                     "DeepSeek 风格的 AI 小说创作客户端。支持 OpenAI 兼容 API、本地 GGUF 离线推理（llama.cpp）、识图、文件导入、思考过程展示。",
                     color = MoyuTextDim,
@@ -370,6 +415,54 @@ fun SettingsScreen(vm: ChatViewModel) {
                 )
             }
         }
+    }
+
+    if (showSourceDialog) {
+        AlertDialog(
+            onDismissRequest = { showSourceDialog = false },
+            title = { Text("添加自定义模型源") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = sourceName,
+                        onValueChange = { sourceName = it },
+                        label = { Text("名称") },
+                        placeholder = { Text("例如：公司内网镜像") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = sourceUrl,
+                        onValueChange = { sourceUrl = it },
+                        label = { Text("地址") },
+                        placeholder = { Text("https://hf-mirror.com") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "地址要能访问 /api/models 和 /api/models/{repo}?blobs=true。",
+                        color = MoyuTextDim,
+                        fontSize = 11.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.addModelSource(sourceName, sourceUrl)
+                    if (sourceName.isNotBlank() && sourceUrl.isNotBlank()) {
+                        sourceName = ""
+                        sourceUrl = ""
+                        showSourceDialog = false
+                    }
+                }) {
+                    Text("添加")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSourceDialog = false }) { Text("取消") }
+            },
+            containerColor = MoyuSurface,
+        )
     }
 
     if (confirmClear) {

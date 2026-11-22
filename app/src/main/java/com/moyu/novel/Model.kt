@@ -60,12 +60,26 @@ data class ApiEndpoint(
     val preset: Boolean = false,
 )
 
+enum class ModelSourceKind { HF, MODELSCOPE }
+
+data class ModelSource(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val kind: ModelSourceKind = ModelSourceKind.HF,
+    val preset: Boolean = false,
+)
+
+data class CatalogModel(val repo: String, val note: String)
+
 data class AppSettings(
     val endpoints: List<ApiEndpoint> = defaultEndpoints(),
     val activeEndpointId: String = "deepseek",
     val temperature: Float = 0.8f,
     val maxTokens: Int = 2048,
     val contextSize: Int = 4096,
+    val modelSources: List<ModelSource> = defaultModelSources(),
+    val activeSourceId: String = "hf-mirror",
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val deepThinking: Boolean = true,
     val useLocal: Boolean = false,
@@ -110,6 +124,7 @@ data class HubModel(
     val downloads: Long,
     val likes: Long,
     val tags: List<String>,
+    val note: String = "",
 )
 
 data class HubFile(
@@ -214,4 +229,39 @@ fun formatBytes(bytes: Long): String {
     val mb = kb / 1024.0
     if (mb < 1024) return String.format("%.1f MB", mb)
     return String.format("%.2f GB", mb / 1024.0)
+}
+
+
+fun defaultModelSources(): List<ModelSource> = listOf(
+    ModelSource("hf-mirror", "HF 镜像", "https://hf-mirror.com", ModelSourceKind.HF, true),
+    ModelSource("huggingface", "Hugging Face", "https://huggingface.co", ModelSourceKind.HF, true),
+    ModelSource("modelscope", "魔搭 ModelScope", "https://www.modelscope.cn", ModelSourceKind.MODELSCOPE, true),
+)
+
+val MODELSCOPE_CATALOG = listOf(
+    CatalogModel("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "0.5B · 极速"),
+    CatalogModel("Qwen/Qwen3-0.6B-GGUF", "0.6B · Qwen3"),
+    CatalogModel("Qwen/Qwen2.5-1.5B-Instruct-GGUF", "1.5B"),
+    CatalogModel("Qwen/Qwen3-1.7B-GGUF", "1.7B"),
+    CatalogModel("Qwen/Qwen2.5-3B-Instruct-GGUF", "3B"),
+    CatalogModel("Qwen/Qwen3-4B-GGUF", "4B · 手机推荐"),
+    CatalogModel("Qwen/Qwen2.5-7B-Instruct-GGUF", "7B"),
+    CatalogModel("Qwen/Qwen3-8B-GGUF", "8B"),
+    CatalogModel("Qwen/Qwen3-14B-GGUF", "14B"),
+    CatalogModel("Qwen/Qwen2.5-14B-Instruct-GGUF", "14B"),
+    CatalogModel("Qwen/Qwen3-30B-A3B-GGUF", "30B MoE"),
+    CatalogModel("Qwen/Qwen3-32B-GGUF", "32B"),
+    CatalogModel("Qwen/Qwen2.5-32B-Instruct-GGUF", "32B"),
+    CatalogModel("Qwen/Qwen2.5-72B-Instruct-GGUF", "72B"),
+    CatalogModel("Qwen/Qwen3-235B-A22B-GGUF", "235B MoE · 仅收藏"),
+)
+
+fun modelBillions(id: String): Double? {
+    val matches = Regex("(?i)(\\d+(?:\\.\\d+)?)B(?![a-zA-Z0-9])").findAll(id)
+    return matches.mapNotNull { it.groupValues[1].toDoubleOrNull() }.maxOrNull()
+}
+
+fun sourceSizeLabel(id: String): String {
+    val billions = modelBillions(id) ?: return ""
+    return if (billions < 1) "${billions}B" else "${billions.toInt()}B"
 }

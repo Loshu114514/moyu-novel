@@ -7,7 +7,7 @@
 - **DeepSeek 风格界面**：深色主题、左侧会话抽屉、流式输出、停止生成、消息复制 / 重新生成。
 - **两种模型来源**
   - 在线：DeepSeek、通义千问（DashScope）、智谱 GLM、Kimi、OpenAI、任意 OpenAI 兼容接口。
-  - 本地：从 hf-mirror.com 搜索 / 下载 GGUF 到手机，用 llama.cpp 在 arm64 CPU 上离线推理；支持删除、切换模型。
+  - 本地：多模型源（HF 镜像 / Hugging Face / 魔搭 ModelScope / 自定义 HF 兼容源），搜索 0.5B–235B 的 GGUF，下载到手机后用 llama.cpp 在 arm64 CPU 上离线推理；支持删除、切换模型。
 - **识图**：拍照或从相册选图，配合视觉模型（如 `qwen3-vl-plus`、`glm-4.5v`、`gpt-4o`）识图写作。
 - **深度思考**：解析 `reasoning_content` 与 `思考...` 标签，思考过程可折叠查看并显示用时。
 - **文件与相机**：支持 txt / md / json / csv / 代码 / PDF / DOCX 文本提取，图片自动压缩后以 data URL 发送。
@@ -33,7 +33,7 @@ GitHub Actions 会在 push 到 `main` 或手动 `workflow_dispatch` 时：
 ## 使用
 
 1. 打开 App → 左上角菜单 → **设置** → **API 服务**，选服务商并填入自己的 API Key（或直接使用本地模型）。
-2. 想离线用：**模型库** → 推荐里的 `unsloth/Qwen3.5-4B-GGUF` → 选 `Q4_K_M` → 下载 → 点“使用”。
+2. 想离线用：**模型库** → 选择模型源（默认 HF 镜像，国内可切魔搭）→ 搜 `Qwen3` / 选大小筛选 → 选 `Q4_K_M` → 下载 → 点“使用”。自定义源在 **设置 → 模型源** 里添加。
 3. 回到对话，直接输入或点建议卡片；写作时可上传设定文档、人物表、参考章节。
 
 ## 隐私

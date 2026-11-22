@@ -460,8 +460,7 @@ private fun HomeContent(vm: ChatViewModel) {
                 "当前模型：${vm.activeModelLabel()}",
                 color = MoyuTextDim.copy(alpha = 0.8f),
                 fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                lineHeight = 17.sp,
             )
         }
         Spacer(Modifier.height(20.dp))
@@ -1018,16 +1017,14 @@ private fun ModelRow(
             Text(
                 text = title,
                 fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                lineHeight = 19.sp,
                 color = if (selected) MoyuText else MoyuText.copy(alpha = 0.9f),
             )
             Text(
                 text = subtitle,
                 fontSize = 11.sp,
+                lineHeight = 16.sp,
                 color = MoyuTextDim,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
         }
     }

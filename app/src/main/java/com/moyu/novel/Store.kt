@@ -53,9 +53,29 @@ class Store(private val context: Context) {
                 }
             }
             val merged = mergeEndpoints(loaded)
+            val loadedSources = mutableListOf<ModelSource>()
+            json.optJSONArray("modelSources")?.let { array ->
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val kind = runCatching {
+                        ModelSourceKind.valueOf(item.optString("kind", "HF"))
+                    }.getOrDefault(ModelSourceKind.HF)
+                    loadedSources += ModelSource(
+                        id = item.optString("id"),
+                        name = item.optString("name", "自定义源"),
+                        baseUrl = item.optString("baseUrl"),
+                        kind = kind,
+                        preset = item.optBoolean("preset", false),
+                    ).let { if (it.id.isBlank()) it.copy(id = "custom-" + System.currentTimeMillis()) else it }
+                }
+            }
+            val mergedSources = mergeSources(loadedSources)
+            val requestedSource = json.optString("activeSourceId", "hf-mirror")
             AppSettings(
                 endpoints = merged,
                 activeEndpointId = json.optString("activeEndpointId", "deepseek"),
+                modelSources = mergedSources,
+                activeSourceId = if (mergedSources.any { it.id == requestedSource }) requestedSource else mergedSources.first().id,
                 temperature = json.optDouble("temperature", 0.8).toFloat(),
                 maxTokens = json.optInt("maxTokens", 2048),
                 contextSize = json.optInt("contextSize", 4096),
@@ -66,6 +86,25 @@ class Store(private val context: Context) {
                 localThreads = json.optInt("localThreads", 4),
             )
         }.getOrElse { AppSettings() }
+    }
+
+    private fun mergeSources(loaded: List<ModelSource>): List<ModelSource> {
+        if (loaded.isEmpty()) return defaultModelSources()
+        val byId = loaded.associateBy { it.id }.toMutableMap()
+        defaultModelSources().forEach { preset ->
+            val existing = byId[preset.id]
+            if (existing == null) {
+                byId[preset.id] = preset
+            } else if (existing.preset) {
+                byId[preset.id] = existing.copy(
+                    name = existing.name.ifBlank { preset.name },
+                    baseUrl = existing.baseUrl.ifBlank { preset.baseUrl },
+                    kind = preset.kind,
+                    preset = true,
+                )
+            }
+        }
+        return byId.values.toList()
     }
 
     fun saveSettings(settings: AppSettings) {
@@ -88,6 +127,18 @@ class Store(private val context: Context) {
                     }
                 })
                 put("activeEndpointId", settings.activeEndpointId)
+                put("modelSources", JSONArray().apply {
+                    settings.modelSources.forEach { source ->
+                        put(JSONObject().apply {
+                            put("id", source.id)
+                            put("name", source.name)
+                            put("baseUrl", source.baseUrl)
+                            put("kind", source.kind.name)
+                            put("preset", source.preset)
+                        })
+                    }
+                })
+                put("activeSourceId", settings.activeSourceId)
                 put("temperature", settings.temperature.toDouble())
                 put("maxTokens", settings.maxTokens)
                 put("contextSize", settings.contextSize)
