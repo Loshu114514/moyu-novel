@@ -30,6 +30,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.moyu.novel.ui.AgentChatScreen
+import com.moyu.novel.ui.AgentChatTopBar
+import com.moyu.novel.ui.AgentEditScreen
+import com.moyu.novel.ui.AgentListScreen
+import com.moyu.novel.ui.AgentMemoryScreen
 import com.moyu.novel.ui.ChatBody
 import com.moyu.novel.ui.ChatTopBar
 import com.moyu.novel.ui.Composer
@@ -39,6 +44,7 @@ import com.moyu.novel.ui.ImportScreen
 import com.moyu.novel.ui.LocalModelManagerSheet
 import com.moyu.novel.ui.MemorySheet
 import com.moyu.novel.ui.ModeSheet
+import com.moyu.novel.ui.ModelFileManagerDialog
 import com.moyu.novel.ui.ModelHubScreen
 import com.moyu.novel.ui.ModelPickerSheet
 import com.moyu.novel.ui.MoyuBg
@@ -118,7 +124,12 @@ fun MoyuRoot(vm: ChatViewModel) {
         if (drawerState.isOpen) {
             scope.launch { drawerState.close() }
         } else {
-            vm.goTo(Screen.CHAT)
+            when (screen) {
+                Screen.AGENT_CHAT -> vm.goTo(Screen.AGENTS)
+                Screen.AGENT_MEMORY -> vm.goTo(Screen.AGENT_CHAT)
+                Screen.AGENT_EDIT -> vm.goTo(Screen.AGENTS)
+                else -> vm.goTo(Screen.CHAT)
+            }
         }
     }
 
@@ -141,11 +152,15 @@ fun MoyuRoot(vm: ChatViewModel) {
                     Screen.MODELS -> SimpleTopBar("模型库") { vm.goTo(Screen.CHAT) }
                     Screen.SETTINGS -> SimpleTopBar("设置") { vm.goTo(Screen.CHAT) }
                     Screen.IMPORT -> SimpleTopBar("导入聊天记录") { vm.goTo(Screen.CHAT) }
+                    Screen.AGENTS -> SimpleTopBar("智能体") { vm.goTo(Screen.CHAT) }
+                    Screen.AGENT_EDIT -> SimpleTopBar("编辑智能体") { vm.goTo(Screen.AGENTS) }
+                    Screen.AGENT_CHAT -> AgentChatTopBar(vm)
+                    Screen.AGENT_MEMORY -> SimpleTopBar("记忆池") { vm.goTo(Screen.AGENT_CHAT) }
                 }
             },
             bottomBar = {
-                if (screen == Screen.CHAT) {
-                    Composer(vm)
+                if (screen == Screen.CHAT || screen == Screen.AGENT_CHAT) {
+                    Composer(vm, hideMode = screen == Screen.AGENT_CHAT)
                 }
             },
         ) { padding ->
@@ -155,6 +170,15 @@ fun MoyuRoot(vm: ChatViewModel) {
                     Screen.MODELS -> ModelHubScreen(vm)
                     Screen.SETTINGS -> SettingsScreen(vm)
                     Screen.IMPORT -> ImportScreen(vm)
+                    Screen.AGENTS -> AgentListScreen(vm)
+                    Screen.AGENT_EDIT -> AgentEditScreen(vm)
+                    Screen.AGENT_CHAT -> {
+                        val conversation = vm.activeConversation
+                        if (conversation != null) {
+                            AgentChatScreen(vm, conversation)
+                        }
+                    }
+                    Screen.AGENT_MEMORY -> AgentMemoryScreen(vm)
                 }
             }
         }
@@ -171,6 +195,9 @@ fun MoyuRoot(vm: ChatViewModel) {
     }
     if (vm.showLocalModelManager) {
         LocalModelManagerSheet(vm)
+    }
+    if (vm.showModelFileManager) {
+        ModelFileManagerDialog(vm)
     }
     if (vm.showModeSheet) {
         ModeSheet(vm)

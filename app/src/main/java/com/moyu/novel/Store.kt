@@ -14,6 +14,9 @@ class Store(private val context: Context) {
     private val conversationsFile = File(dir, "conversations.json")
     private val settingsFile = File(dir, "settings.json")
     private val downloadsFile = File(dir, "downloads.json")
+    private val agentsFile = File(dir, "agents.json")
+
+    val agentsDir: File = File(dir, "agents").apply { mkdirs() }
 
     val modelsDir: File = File(
         context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
@@ -48,6 +51,71 @@ class Store(private val context: Context) {
 
     fun writeConversationsJson(payload: String) {
         writeAtomic(conversationsFile, payload)
+    }
+
+    fun loadAgents(): List<AgentProfile> {
+        if (!agentsFile.exists()) return emptyList()
+        return runCatching {
+            val array = JSONArray(agentsFile.readText())
+            (0 until array.length()).mapNotNull { index ->
+                val json = array.optJSONObject(index) ?: return@mapNotNull null
+                val agent = AgentProfile(
+                    id = json.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                    name = json.optString("name", "新智能体"),
+                    persona = json.optString("persona"),
+                    greeting = json.optString("greeting"),
+                    avatarPath = json.optString("avatarPath", "").ifBlank { null },
+                    backgroundPath = json.optString("backgroundPath", "").ifBlank { null },
+                    contextLength = json.optInt("contextLength", 4096),
+                    conversationId = json.optString("conversationId").ifBlank { java.util.UUID.randomUUID().toString() },
+                )
+                agent.updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
+                json.optJSONArray("memories")?.let { memories ->
+                    for (i in 0 until memories.length()) {
+                        val item = memories.optJSONObject(i) ?: continue
+                        val role = runCatching { Role.valueOf(item.optString("role", "ASSISTANT")) }
+                            .getOrDefault(Role.ASSISTANT)
+                        agent.memories += AgentMemory(
+                            id = item.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                            messageId = item.optString("messageId"),
+                            role = role,
+                            content = item.optString("content"),
+                            createdAt = item.optLong("createdAt", System.currentTimeMillis()),
+                        )
+                    }
+                }
+                agent
+            }
+        }.getOrElse { emptyList() }
+    }
+
+    fun saveAgents(agents: List<AgentProfile>) {
+        writeAtomic(agentsFile, JSONArray().apply {
+            agents.forEach { agent ->
+                put(JSONObject().apply {
+                    put("id", agent.id)
+                    put("name", agent.name)
+                    put("persona", agent.persona)
+                    put("greeting", agent.greeting)
+                    put("avatarPath", agent.avatarPath ?: "")
+                    put("backgroundPath", agent.backgroundPath ?: "")
+                    put("contextLength", agent.contextLength)
+                    put("conversationId", agent.conversationId)
+                    put("updatedAt", agent.updatedAt)
+                    put("memories", JSONArray().apply {
+                        agent.memories.forEach { memory ->
+                            put(JSONObject().apply {
+                                put("id", memory.id)
+                                put("messageId", memory.messageId)
+                                put("role", memory.role.name)
+                                put("content", memory.content)
+                                put("createdAt", memory.createdAt)
+                            })
+                        }
+                    })
+                })
+            }
+        }.toString())
     }
 
     fun loadSettings(): AppSettings {
@@ -266,6 +334,7 @@ class Store(private val context: Context) {
         )
         conversation.updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
         conversation.systemPrompt = json.optString("systemPrompt", "").ifBlank { null }
+        conversation.agentId = json.optString("agentId", "").ifBlank { null }
         val modeRaw = json.optString("mode", "")
         conversation.mode = if (modeRaw.isBlank()) {
             ChatMode.NOVEL
@@ -322,6 +391,7 @@ class Store(private val context: Context) {
         put("title", conversation.title)
         put("updatedAt", conversation.updatedAt)
         put("systemPrompt", conversation.systemPrompt ?: "")
+        put("agentId", conversation.agentId ?: "")
         put("mode", conversation.mode.name)
         put("contextMode", conversation.contextMode.name)
         put("messages", JSONArray().apply {

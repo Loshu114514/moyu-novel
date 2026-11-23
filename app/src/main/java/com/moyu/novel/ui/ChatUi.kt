@@ -258,8 +258,9 @@ fun DrawerContent(vm: ChatViewModel, drawerState: DrawerState) {
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
             )
 
+            val normalChats = vm.conversations.filter { it.agentId == null }
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(vm.conversations, key = { it.id }) { conversation ->
+                items(normalChats, key = { it.id }) { conversation ->
                     DrawerConversationRow(
                         conversation = conversation,
                         selected = conversation.id == vm.activeId,
@@ -273,6 +274,10 @@ fun DrawerContent(vm: ChatViewModel, drawerState: DrawerState) {
             }
 
             HorizontalDivider(color = MoyuBorder)
+            DrawerActionRow(Icons.Outlined.SmartToy, "智能体", "创建角色 · 人设 · 记忆池") {
+                vm.goTo(com.moyu.novel.Screen.AGENTS)
+                close()
+            }
             DrawerActionRow(Icons.Outlined.Memory, "模型库", "本地 GGUF 下载") {
                 vm.goTo(com.moyu.novel.Screen.MODELS)
                 close()
@@ -408,8 +413,9 @@ private fun HomeContent(vm: ChatViewModel) {
             fontSize = 13.sp,
         )
         Spacer(Modifier.height(14.dp))
+        val selectableModes = listOf(ChatMode.CHAT, ChatMode.NOVEL)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChatMode.entries.forEach { item ->
+            selectableModes.forEach { item ->
                 FilterChip(
                     selected = mode == item,
                     onClick = { vm.setMode(item) },
@@ -484,9 +490,8 @@ private fun HomeContent(vm: ChatViewModel) {
         Spacer(Modifier.height(34.dp))
 
         val suggestions = when (mode) {
-            ChatMode.CHAT -> CHAT_SUGGESTIONS
             ChatMode.NOVEL -> NOVEL_SUGGESTIONS
-            ChatMode.AGENT -> AGENT_SUGGESTIONS
+            else -> CHAT_SUGGESTIONS
         }
         suggestions.chunked(2).forEach { rowItems ->
             Row(
@@ -505,7 +510,31 @@ private fun HomeContent(vm: ChatViewModel) {
             Spacer(Modifier.height(10.dp))
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(18.dp))
+        Surface(
+            modifier = Modifier.fillMaxWidth().clickable { vm.goTo(com.moyu.novel.Screen.AGENTS) },
+            color = MoyuSurface,
+            shape = RoundedCornerShape(14.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MoyuBorder),
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.SmartToy, contentDescription = null, tint = MoyuBlue, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("我的智能体", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "自己创建角色：人设、头像、背景、上下文和记忆池",
+                        color = MoyuTextDim,
+                        fontSize = 11.sp,
+                    )
+                }
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = MoyuTextDim, modifier = Modifier.size(18.dp))
+            }
+        }
+        Spacer(Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 Icons.Outlined.Memory,
@@ -884,7 +913,7 @@ private fun AttachmentBadge(attachment: Attachment, onRemove: (() -> Unit)? = nu
 }
 
 @Composable
-fun Composer(vm: ChatViewModel) {
+fun Composer(vm: ChatViewModel, hideMode: Boolean = false) {
     val context = LocalContext.current
     var input by rememberSaveable { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
@@ -928,23 +957,25 @@ fun Composer(vm: ChatViewModel) {
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    item {
-                        AssistChip(
-                            onClick = { vm.showModeSheet = true },
-                            label = {
-                                Text(
-                                    vm.activeConversation?.mode?.label ?: ChatMode.CHAT.label,
-                                    fontSize = 12.sp,
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    modeIcon(vm.activeConversation?.mode ?: ChatMode.CHAT),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(15.dp),
-                                )
-                            },
-                        )
+                    if (!hideMode) {
+                        item {
+                            AssistChip(
+                                onClick = { vm.showModeSheet = true },
+                                label = {
+                                    Text(
+                                        vm.activeConversation?.mode?.label ?: ChatMode.CHAT.label,
+                                        fontSize = 12.sp,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        modeIcon(vm.activeConversation?.mode ?: ChatMode.CHAT),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                },
+                            )
+                        }
                     }
                     item {
                         AssistChip(

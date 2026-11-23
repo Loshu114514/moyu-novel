@@ -325,7 +325,7 @@ fun SettingsScreen(vm: ChatViewModel) {
 
                 Text("新对话默认模式", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(ChatMode.entries, key = { it.name }) { mode ->
+                    items(ChatMode.entries.filter { it != ChatMode.AGENT }, key = { it.name }) { mode ->
                         FilterChip(
                             selected = settings.defaultMode == mode,
                             onClick = { vm.updateSettings { it.copy(defaultMode = mode) } },
@@ -480,7 +480,7 @@ fun SettingsScreen(vm: ChatViewModel) {
 
         item {
             Section("关于") {
-                Text("墨语 1.0.3", fontSize = 14.sp)
+                Text("墨语 1.0.0", fontSize = 14.sp)
                 Text(
                     "DeepSeek 风格的 AI 小说创作客户端。支持 OpenAI 兼容 API、本地 GGUF 离线推理（llama.cpp）、识图、文件导入、思考过程展示。",
                     color = MoyuTextDim,

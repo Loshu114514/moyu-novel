@@ -59,11 +59,42 @@ class Conversation(
     var title by mutableStateOf(title)
     var updatedAt by mutableStateOf(System.currentTimeMillis())
     var systemPrompt: String? = null
+    var agentId: String? = null
     var mode by mutableStateOf(ChatMode.CHAT)
     var contextMode by mutableStateOf(ContextMode.ALL)
     val messages = mutableStateListOf<ChatMessage>()
 
     fun lastUserMessage(): ChatMessage? = messages.lastOrNull { it.role == Role.USER }
+}
+
+class AgentMemory(
+    val id: String = UUID.randomUUID().toString(),
+    val messageId: String = "",
+    val role: Role = Role.ASSISTANT,
+    content: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+) {
+    var content by mutableStateOf(content)
+}
+
+class AgentProfile(
+    val id: String = UUID.randomUUID().toString(),
+    name: String = "新智能体",
+    persona: String = "",
+    greeting: String = "",
+    avatarPath: String? = null,
+    backgroundPath: String? = null,
+    contextLength: Int = 4096,
+    val conversationId: String = UUID.randomUUID().toString(),
+) {
+    var name by mutableStateOf(name)
+    var persona by mutableStateOf(persona)
+    var greeting by mutableStateOf(greeting)
+    var avatarPath by mutableStateOf(avatarPath)
+    var backgroundPath by mutableStateOf(backgroundPath)
+    var contextLength by mutableStateOf(contextLength)
+    var updatedAt by mutableStateOf(System.currentTimeMillis())
+    val memories = mutableStateListOf<AgentMemory>()
 }
 
 data class ApiEndpoint(
@@ -160,7 +191,7 @@ data class ImportedChat(
     val messages: List<Pair<Role, String>>,
 )
 
-enum class Screen { CHAT, MODELS, SETTINGS, IMPORT }
+enum class Screen { CHAT, MODELS, SETTINGS, IMPORT, AGENTS, AGENT_EDIT, AGENT_CHAT, AGENT_MEMORY }
 
 const val DEFAULT_SYSTEM_PROMPT =
     "你是一位资深的中文小说作家，擅长长篇网文的创作与续写。\n" +

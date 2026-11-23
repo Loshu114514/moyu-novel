@@ -41,8 +41,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     val conversations = mutableStateListOf<Conversation>()
+    val agents = mutableStateListOf<AgentProfile>()
+    var activeAgentId by mutableStateOf<String?>(null)
+    var editingAgentId by mutableStateOf<String?>(null)
     var activeId by mutableStateOf("")
         private set
+
+    val activeAgent: AgentProfile?
+        get() = agents.firstOrNull { it.id == activeAgentId }
+
+    val editingAgent: AgentProfile?
+        get() = agents.firstOrNull { it.id == editingAgentId }
 
     val activeConversation: Conversation?
         get() = conversations.firstOrNull { it.id == activeId }
@@ -53,6 +62,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var showMemorySheet by mutableStateOf(false)
     var showHistorySheet by mutableStateOf(false)
     var showModeSheet by mutableStateOf(false)
+    var showModelFileManager by mutableStateOf(false)
     val pendingAttachments = mutableStateListOf<Attachment>()
     val localModels = mutableStateListOf<LocalModel>()
     val downloadProgress = mutableStateMapOf<Long, DownloadProgress>()
@@ -86,6 +96,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var genJob: Job? = null
     private var persistJob: Job? = null
     private var settingsJob: Job? = null
+    private var agentsSaveJob: Job? = null
     private var stopRequested = false
     private var localSession: LocalSession? = null
     private var lastStreamSave = 0L
@@ -93,12 +104,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     init {
         val saved = store.loadConversations().sortedByDescending { it.updatedAt }
         conversations.addAll(saved)
-        if (conversations.isEmpty()) {
+        agents.addAll(store.loadAgents())
+        agents.forEach { ensureAgentConversation(it) }
+        val normalChats = conversations.filter { it.agentId == null }
+        if (normalChats.isEmpty()) {
             createConversation(settings.defaultMode)
         } else {
             val restored = settings.lastConversationId
-            activeId = conversations.firstOrNull { it.id == restored }?.id
-                ?: conversations.first().id
+            activeId = normalChats.firstOrNull { it.id == restored }?.id
+                ?: normalChats.first().id
         }
         if (settings.autoMarkImportant) {
             conversations.forEach { conversation ->
@@ -163,6 +177,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         createConversation(mode ?: settings.defaultMode)
+        activeAgentId = null
         localSession = null
         screen = Screen.CHAT
         persistSoon()
@@ -190,11 +205,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectChat(id: String) {
         if (activeId == id) {
+            activeAgentId = null
             screen = Screen.CHAT
             return
         }
         if (isGenerating) stop()
         activeId = id
+        activeAgentId = null
         rememberActive(id)
         localSession = null
         screen = Screen.CHAT
@@ -227,11 +244,265 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearAllChats() {
         if (isGenerating) stop()
-        conversations.clear()
+        conversations.filter { it.agentId == null }.forEach { conversations.remove(it) }
         createConversation()
         localSession = null
         persistSoon()
-        toast = "已清空所有对话"
+        toast = "已清空普通对话，智能体保留"
+    }
+
+    // ---------------------------------------------------------------- agents
+
+    private fun ensureAgentConversation(agent: AgentProfile): Conversation {
+        var conversation = conversations.firstOrNull { it.id == agent.conversationId }
+        if (conversation == null) {
+            conversation = Conversation(id = agent.conversationId, title = agent.name)
+            conversations.add(conversation)
+        }
+        conversation.agentId = agent.id
+        conversation.mode = ChatMode.AGENT
+        if (conversation.systemPrompt.isNullOrBlank()) {
+            conversation.systemPrompt = agent.persona
+        }
+        if (conversation.title == "新对话" && agent.name.isNotBlank()) {
+            conversation.title = agent.name
+        }
+        return conversation
+    }
+
+    fun openAgent(id: String) {
+        if (isGenerating) stop()
+        val agent = agents.firstOrNull { it.id == id } ?: return
+        val conversation = ensureAgentConversation(agent)
+        if (conversation.messages.isEmpty() && agent.greeting.isNotBlank()) {
+            conversation.messages.add(ChatMessage(role = Role.ASSISTANT, content = agent.greeting))
+        }
+        activeAgentId = id
+        activeId = conversation.id
+        localSession = null
+        screen = Screen.AGENT_CHAT
+        persistSoon()
+    }
+
+    fun openAgentMemory(id: String) {
+        val agent = agents.firstOrNull { it.id == id } ?: return
+        val conversation = ensureAgentConversation(agent)
+        activeAgentId = id
+        activeId = conversation.id
+        screen = Screen.AGENT_MEMORY
+    }
+
+    fun createAgent() {
+        val agent = AgentProfile()
+        agents.add(agent)
+        ensureAgentConversation(agent)
+        editingAgentId = agent.id
+        saveAgentsNow()
+        screen = Screen.AGENT_EDIT
+        persistSoon()
+    }
+
+    fun editAgent(id: String) {
+        if (agents.none { it.id == id }) return
+        editingAgentId = id
+        screen = Screen.AGENT_EDIT
+    }
+
+    fun saveAgent(agent: AgentProfile) {
+        if (agents.none { it.id == agent.id }) {
+            agents.add(agent)
+        }
+        agent.updatedAt = System.currentTimeMillis()
+        val conversation = ensureAgentConversation(agent)
+        conversation.title = agent.name.ifBlank { "新智能体" }
+        conversation.systemPrompt = agent.persona
+        conversation.updatedAt = System.currentTimeMillis()
+        saveAgentsNow()
+        persistSoon()
+        editingAgentId = null
+        screen = Screen.AGENTS
+        toast = "智能体已保存"
+    }
+
+    fun deleteAgent(id: String) {
+        if (activeAgentId == id && isGenerating) stop()
+        agents.removeAll { it.id == id }
+        conversations.removeAll { it.agentId == id }
+        if (activeAgentId == id) {
+            activeAgentId = null
+            activeId = conversations.firstOrNull { it.agentId == null }?.id ?: createConversation().id
+        }
+        saveAgentsNow()
+        persistSoon()
+        screen = Screen.AGENTS
+        toast = "已删除智能体"
+    }
+
+    fun setAgentAvatar(agent: AgentProfile, uri: Uri) {
+        viewModelScope.launch {
+            val path = withContext(Dispatchers.IO) {
+                runCatching { copyAgentImage(uri, "avatar_" + agent.id) }.getOrNull()
+            }
+            if (path != null) {
+                agent.avatarPath = path
+                agent.updatedAt = System.currentTimeMillis()
+                saveAgentsNow()
+                toast = "头像已更新"
+            } else {
+                toast = "头像读取失败"
+            }
+        }
+    }
+
+    fun setAgentBackground(agent: AgentProfile, uri: Uri) {
+        viewModelScope.launch {
+            val path = withContext(Dispatchers.IO) {
+                runCatching { copyAgentImage(uri, "background_" + agent.id) }.getOrNull()
+            }
+            if (path != null) {
+                agent.backgroundPath = path
+                agent.updatedAt = System.currentTimeMillis()
+                saveAgentsNow()
+                toast = "背景已更新"
+            } else {
+                toast = "背景读取失败"
+            }
+        }
+    }
+
+    private fun copyAgentImage(uri: Uri, prefix: String): String {
+        val target = File(store.agentsDir, prefix + "_" + System.currentTimeMillis() + ".jpg")
+        app.contentResolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw IOException("无法读取图片")
+        return target.absolutePath
+    }
+
+    private fun recordAgentMessage(conversation: Conversation, message: ChatMessage) {
+        val agentId = conversation.agentId ?: return
+        val agent = agents.firstOrNull { it.id == agentId } ?: return
+        if (message.content.isBlank()) return
+        if (!conversation.messages.any { it.id == message.id }) return
+        if (agent.memories.any { it.messageId == message.id }) return
+        agent.memories.add(
+            AgentMemory(
+                messageId = message.id,
+                role = message.role,
+                content = message.content,
+            ),
+        )
+        agent.updatedAt = System.currentTimeMillis()
+        saveAgentsSoon()
+    }
+
+    private fun removeAgentMemoriesFor(conversation: Conversation, messages: List<ChatMessage>) {
+        val agentId = conversation.agentId ?: return
+        val agent = agents.firstOrNull { it.id == agentId } ?: return
+        val ids = messages.map { it.id }.toSet()
+        agent.memories.removeAll { it.messageId in ids }
+        agent.updatedAt = System.currentTimeMillis()
+        saveAgentsSoon()
+    }
+
+    fun addAgentMemory(text: String) {
+        val agent = activeAgent ?: return
+        if (text.isBlank()) return
+        agent.memories.add(AgentMemory(messageId = "manual-" + System.currentTimeMillis(), role = Role.USER, content = text.trim()))
+        agent.updatedAt = System.currentTimeMillis()
+        saveAgentsNow()
+        toast = "已加入记忆池"
+    }
+
+    fun deleteAgentMemory(memory: AgentMemory) {
+        val agent = activeAgent ?: return
+        agent.memories.remove(memory)
+        saveAgentsNow()
+    }
+
+    fun clearAgentMemories() {
+        val agent = activeAgent ?: return
+        agent.memories.clear()
+        saveAgentsNow()
+        toast = "记忆池已清空"
+    }
+
+    private fun agentMemoryBlock(agent: AgentProfile, excludeMessageId: String? = null): String {
+        if (agent.memories.isEmpty()) return ""
+        val lines = agent.memories
+            .filter { it.messageId != excludeMessageId }
+            .takeLast(20)
+            .joinToString("\n") { memory ->
+            val role = if (memory.role == Role.USER) "用户" else agent.name
+            "- $role：${memory.content.take(240)}"
+        }
+        return "【记忆池】\n$lines"
+    }
+
+    private fun saveAgentsSoon() {
+        agentsSaveJob?.cancel()
+        agentsSaveJob = viewModelScope.launch {
+            delay(400)
+            val snapshot = agents.toList()
+            withContext(Dispatchers.IO) { store.saveAgents(snapshot) }
+        }
+    }
+
+    private fun saveAgentsNow() {
+        agentsSaveJob?.cancel()
+        runCatching { store.saveAgents(agents.toList()) }
+    }
+
+    fun editMessage(conversation: Conversation, message: ChatMessage, newText: String) {
+        if (isGenerating) stop()
+        val index = conversation.messages.indexOf(message)
+        if (index < 0) return
+        val removed = conversation.messages.drop(index + 1)
+        conversation.messages.removeAll(removed)
+        removeAgentMemoriesFor(conversation, removed)
+        if (conversation.agentId != null) {
+            val agent = agents.firstOrNull { it.id == conversation.agentId }
+            agent?.memories?.removeAll { it.messageId == message.id }
+        }
+        message.content = newText.trim()
+        if (conversation.agentId != null && message.content.isNotBlank()) {
+            recordAgentMessage(conversation, message)
+        }
+        localSession = null
+        persistSoon()
+        saveAgentsSoon()
+    }
+
+    fun withdrawMessage(conversation: Conversation, message: ChatMessage) {
+        if (isGenerating) stop()
+        val index = conversation.messages.indexOf(message)
+        if (index < 0) return
+        val removed = conversation.messages.drop(index)
+        conversation.messages.removeAll(removed)
+        removeAgentMemoriesFor(conversation, removed)
+        localSession = null
+        persistSoon()
+        saveAgentsSoon()
+        toast = "已撤回，未计入记忆池"
+    }
+
+    fun regenerateFrom(conversation: Conversation, message: ChatMessage) {
+        if (isGenerating) stop()
+        val index = conversation.messages.indexOf(message)
+        if (index < 0) return
+        val removed = if (message.role == Role.ASSISTANT) {
+            conversation.messages.drop(index)
+        } else {
+            conversation.messages.drop(index + 1)
+        }
+        conversation.messages.removeAll(removed)
+        removeAgentMemoriesFor(conversation, removed)
+        localSession = null
+        persistSoon()
+        if (conversation.messages.lastOrNull()?.role == Role.USER) {
+            startReply(conversation)
+        } else {
+            toast = "这条消息前面没有可用的提问"
+        }
     }
 
     // ---------------------------------------------------------------- sending
@@ -248,11 +519,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         userMessage.attachments.addAll(attachments)
         conversation.messages.add(userMessage)
         autoMarkImportant(userMessage, conversation)
+        if (conversation.agentId != null) {
+            recordAgentMessage(conversation, userMessage)
+        }
         if (conversation.messages.count { it.role == Role.USER } == 1) {
             conversation.title = makeTitle(content.ifBlank { attachments.firstOrNull()?.name ?: "图片对话" })
         }
         conversation.updatedAt = System.currentTimeMillis()
-        rememberActive(conversation.id)
+        if (conversation.agentId == null) {
+            rememberActive(conversation.id)
+        }
         if (conversations.firstOrNull()?.id != conversation.id) {
             conversations.remove(conversation)
             conversations.add(0, conversation)
@@ -311,6 +587,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 isGenerating = false
                 stopRequested = false
                 conversation.updatedAt = System.currentTimeMillis()
+                if (conversation.agentId != null) {
+                    if (assistant.content.isNotBlank()) {
+                        recordAgentMessage(conversation, assistant)
+                    }
+                    conversation.messages.lastOrNull { it.role == Role.USER }?.let {
+                        recordAgentMessage(conversation, it)
+                    }
+                }
                 persistSoon()
             }
         }
@@ -404,13 +688,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val path = settings.localModelPath ?: localModels.firstOrNull()?.path
             ?: throw IllegalStateException("还没有本地模型：模型 → 模型库下载")
         if (!File(path).exists()) throw IllegalStateException("本地模型文件不见了，请重新下载")
+        val contextSize = effectiveContextSize(conversation)
         if (settings.localModelPath != path) {
             settings = settings.copy(localModelPath = path, useLocal = true)
             saveSettingsSoon()
         }
-        if (engine.loadedModelPath() != path) {
+        if (engine.loadedModelPath() != path || engine.contextSize() != contextSize) {
             engineStatus = "正在加载模型…（首次加载可能要几十秒）"
-            val ok = engine.load(path, settings.contextSize, settings.localThreads)
+            val ok = engine.load(path, contextSize, settings.localThreads)
             if (!ok) {
                 engineStatus = "模型加载失败"
                 throw IllegalStateException("本地模型加载失败：内存不足或文件损坏（试试更小的量化或调小上下文）")
@@ -420,7 +705,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val system = turn.system
-        val contextSize = settings.contextSize
         val history = turn.history
         val userMessage = conversation.messages.getOrNull(conversation.messages.size - 2)
             ?: throw IllegalStateException("消息状态异常，请重新发送")
@@ -556,7 +840,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         var trace = ""
         var toolContext = ""
 
-        if (conversation.mode == ChatMode.AGENT) {
+        if (conversation.mode == ChatMode.AGENT && conversation.agentId == null) {
             val memories = conversation.messages.filter { it.important && it.content.isNotBlank() }.map { it.content }
             val result = tools.prepare(userMessage.content, memories, settings.webSearch)
             if (result != null) {
@@ -571,11 +855,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        if (conversation.contextMode == ContextMode.IMPORTANT || conversation.mode == ChatMode.AGENT) {
-            val memory = memoryBlock(conversation)
-            if (memory.isNotBlank()) {
-                system = system.trimEnd() + "\n\n" + memory
+        val memory = when {
+            conversation.agentId != null -> {
+                agents.firstOrNull { it.id == conversation.agentId }
+                    ?.let { agentMemoryBlock(it, userMessage.id) }.orEmpty()
             }
+            conversation.contextMode == ContextMode.IMPORTANT || conversation.mode == ChatMode.AGENT -> {
+                memoryBlock(conversation)
+            }
+            else -> ""
+        }
+        if (memory.isNotBlank()) {
+            system = system.trimEnd() + "\n\n" + memory
         }
         if (toolContext.isNotBlank()) {
             system = system.trimEnd() + "\n\n" + toolContext
@@ -614,12 +905,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun systemPromptFor(conversation: Conversation): String {
+        conversation.agentId?.let { id ->
+            val agent = agents.firstOrNull { it.id == id }
+            if (agent != null) {
+                val persona = agent.persona.trim().ifBlank {
+                    "你是一个有自己性格和生活感的聊天角色，用第一人称和用户自然聊天，保持人设一致。"
+                }
+                return "你的名字是「${agent.name}」。\n$persona"
+            }
+        }
         conversation.systemPrompt?.takeIf { it.isNotBlank() }?.let { return it }
         return when (conversation.mode) {
             ChatMode.CHAT -> settings.chatPrompt
             ChatMode.NOVEL -> settings.systemPrompt
             ChatMode.AGENT -> AGENT_SYSTEM_PROMPT
         }
+    }
+
+    private fun effectiveContextSize(conversation: Conversation): Int {
+        val agent = conversation.agentId?.let { id -> agents.firstOrNull { it.id == id } }
+        return (agent?.contextLength ?: settings.contextSize).coerceIn(1024, 8192)
     }
 
     private fun memoryBlock(conversation: Conversation): String {
@@ -937,6 +1242,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteLocalModels(models: List<LocalModel>) {
+        if (models.isEmpty()) return
+        val paths = models.map { it.path }.toSet()
+        if (engine.loadedModelPath() in paths) {
+            viewModelScope.launch { engine.release() }
+        }
+        val deleted = models.count { store.deleteModel(it.path) }
+        refreshLocalModels()
+        if (settings.localModelPath in paths) {
+            settings = settings.copy(localModelPath = null, useLocal = false)
+            localSession = null
+            saveSettingsNow()
+        }
+        toast = "已删除 $deleted 个模型文件"
+    }
+
     fun importLocalModel(uri: Uri) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -1160,6 +1481,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             store.writeConversationsJson(store.buildConversationsJson(conversations.toList()))
             store.saveSettings(settings)
             store.saveDownloads(downloads)
+            store.saveAgents(agents.toList())
         }
     }
 

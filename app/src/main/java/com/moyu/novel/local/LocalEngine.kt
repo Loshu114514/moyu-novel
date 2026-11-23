@@ -32,6 +32,12 @@ class LocalEngine(context: Context) {
     private var loadedPath: String? = null
 
     @Volatile
+    private var loadedContext = 0
+
+    @Volatile
+    private var loadedThreads = 0
+
+    @Volatile
     private var cancelRequested = false
 
     private external fun nativeInit(nativeLibDir: String)
@@ -73,13 +79,23 @@ class LocalEngine(context: Context) {
     suspend fun load(path: String, contextSize: Int, threads: Int): Boolean = mutex.withLock {
         withContext(dispatcher) {
             ensureInitialized()
-            if (loadedPath == path && isLoaded()) return@withContext true
+            val wantedCtx = contextSize.coerceIn(1024, 16384)
+            val wantedThreads = threads.coerceIn(1, 8)
+            if (loadedPath == path && loadedContext == wantedCtx &&
+                loadedThreads == wantedThreads && isLoaded()
+            ) {
+                return@withContext true
+            }
             if (loadedPath != null) {
                 freeModel()
                 loadedPath = null
             }
-            val ok = loadModel(path, contextSize.coerceIn(1024, 16384), threads.coerceIn(1, 8))
-            if (ok) loadedPath = path
+            val ok = loadModel(path, wantedCtx, wantedThreads)
+            if (ok) {
+                loadedPath = path
+                loadedContext = wantedCtx
+                loadedThreads = wantedThreads
+            }
             ok
         }
     }
@@ -89,6 +105,8 @@ class LocalEngine(context: Context) {
             if (initialized) {
                 freeModel()
                 loadedPath = null
+                loadedContext = 0
+                loadedThreads = 0
             }
         }
     }
@@ -170,6 +188,8 @@ class LocalEngine(context: Context) {
             runCatching { nativeShutdown() }
             initialized = false
             loadedPath = null
+            loadedContext = 0
+            loadedThreads = 0
         }
     }
 }

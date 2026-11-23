@@ -15,8 +15,8 @@ android {
         applicationId = "com.moyu.novel"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.3"
+        versionCode = 4
+        versionName = "1.0.0"
 
         if (!project.hasProperty("noNative")) {
             ndk {
