@@ -95,7 +95,7 @@ fun AgentAvatar(agent: AgentProfile, size: Dp = 48.dp) {
     val bitmap by produceState<Bitmap?>(initialValue = null, agent.avatarPath) {
         value = agent.avatarPath?.let { path ->
             withContext(Dispatchers.IO) {
-                runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+                runCatching { decodeSampled(path, 256) }.getOrNull()
             }
         }
     }
@@ -333,7 +333,7 @@ fun AgentEditScreen(vm: ChatViewModel) {
 private fun AgentBackgroundPreview(path: String, modifier: Modifier = Modifier) {
     val bitmap by produceState<Bitmap?>(initialValue = null, path) {
         value = withContext(Dispatchers.IO) {
-            runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+            runCatching { decodeSampled(path, 1280) }.getOrNull()
         }
     }
     bitmap?.let {
@@ -415,7 +415,7 @@ fun AgentChatScreen(vm: ChatViewModel, conversation: Conversation) {
         if (backgroundPath != null) {
             val bitmap by produceState<Bitmap?>(initialValue = null, backgroundPath) {
                 value = withContext(Dispatchers.IO) {
-                    runCatching { BitmapFactory.decodeFile(backgroundPath) }.getOrNull()
+                    runCatching { decodeSampled(backgroundPath, 1280) }.getOrNull()
                 }
             }
             bitmap?.let {
@@ -758,4 +758,16 @@ private fun AgentMemoryRow(memory: AgentMemory, onDelete: () -> Unit) {
             }
         }
     }
+}
+
+
+private fun decodeSampled(path: String, maxDim: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) {
+        sample *= 2
+    }
+    return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
 }
