@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.moyu.novel.ChatViewModel
+import com.moyu.novel.DeviceInfo
 import com.moyu.novel.HubFile
 import com.moyu.novel.LocalModel
 import com.moyu.novel.ModelSourceKind
@@ -55,19 +56,24 @@ import com.moyu.novel.formatBytes
 import com.moyu.novel.modelBillions
 import com.moyu.novel.sourceSizeLabel
 
-private val sizeFilters = listOf("全部", "≤3B", "4-8B", "14-32B", "≥70B")
+private val vendorFilters = listOf("全部", "Qwen", "Llama", "Gemma", "DeepSeek", "Mistral", "Phi", "GLM", "其他")
 
-private fun matchesSize(id: String, filter: String): Boolean {
-    if (filter == "全部") return true
-    val billions = modelBillions(id) ?: return false
-    return when (filter) {
-        "≤3B" -> billions <= 3.0
-        "4-8B" -> billions in 4.0..8.0
-        "14-32B" -> billions in 14.0..32.0
-        "≥70B" -> billions >= 70.0
-        else -> true
+private fun vendorOf(id: String): String {
+    val value = id.lowercase()
+    return when {
+        value.contains("qwen") -> "Qwen"
+        value.contains("llama") -> "Llama"
+        value.contains("gemma") -> "Gemma"
+        value.contains("deepseek") -> "DeepSeek"
+        value.contains("mistral") || value.contains("mixtral") -> "Mistral"
+        value.contains("phi-") || value.contains("phi_") || value.contains("microsoft/phi") -> "Phi"
+        value.contains("glm") || value.contains("chatglm") -> "GLM"
+        else -> "其他"
     }
 }
+
+private fun matchesVendor(id: String, filter: String): Boolean =
+    filter == "全部" || vendorOf(id) == filter
 
 @Composable
 fun ModelHubScreen(vm: ChatViewModel) {
@@ -76,14 +82,14 @@ fun ModelHubScreen(vm: ChatViewModel) {
     var expanded by remember { mutableStateOf<String?>(null) }
     var manualRepo by remember { mutableStateOf<String?>(null) }
     var repoInput by remember { mutableStateOf("") }
-    var sizeFilter by remember { mutableStateOf("全部") }
+    var vendorFilter by remember { mutableStateOf("全部") }
 
     LaunchedEffect(vm.settings.activeSourceId) {
         query = ""
         searched = false
         expanded = null
         manualRepo = null
-        sizeFilter = "全部"
+        vendorFilter = "全部"
         vm.searchHub("")
     }
     LaunchedEffect(expanded) {
@@ -91,8 +97,8 @@ fun ModelHubScreen(vm: ChatViewModel) {
     }
 
     val source = vm.activeSource
-    val hubList = vm.hubModels.filter { matchesSize(it.id, sizeFilter) }
-    val recList = vm.recommendedModels.filter { matchesSize(it.repo, sizeFilter) }
+    val hubList = vm.hubModels.filter { matchesVendor(it.id, vendorFilter) }
+    val recList = vm.recommendedModels.filter { matchesVendor(it.repo, vendorFilter) }
 
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
@@ -113,6 +119,11 @@ fun ModelHubScreen(vm: ChatViewModel) {
                         Text("管理源", fontSize = 12.sp)
                     }
                 }
+                item {
+                    TextButton(onClick = { vm.showLocalModelManager = true }) {
+                        Text("本地模型管理", fontSize = 12.sp)
+                    }
+                }
             }
         }
 
@@ -131,6 +142,18 @@ fun ModelHubScreen(vm: ChatViewModel) {
                         color = MoyuTextDim,
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
+                    )
+                    Text(
+                        DeviceInfo.localHint(),
+                        color = if (DeviceInfo.isSnapdragon8Gen2OrNewer) MoyuGreen else MoyuTextDim,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                    Text(
+                        "本地模型可以在小窗口里直接删除或导入。",
+                        color = MoyuTextDim.copy(alpha = 0.7f),
+                        fontSize = 10.sp,
+                        lineHeight = 15.sp,
                     )
                     if (source.kind == ModelSourceKind.MODELSCOPE) {
                         Text(
@@ -172,10 +195,10 @@ fun ModelHubScreen(vm: ChatViewModel) {
 
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(sizeFilters, key = { it }) { filter ->
+                items(vendorFilters, key = { it }) { filter ->
                     FilterChip(
-                        selected = sizeFilter == filter,
-                        onClick = { sizeFilter = filter },
+                        selected = vendorFilter == filter,
+                        onClick = { vendorFilter = filter },
                         label = { Text(filter, fontSize = 12.sp) },
                     )
                 }

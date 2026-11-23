@@ -5,6 +5,8 @@ import android.os.Environment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class Store(private val context: Context) {
 
@@ -19,13 +21,19 @@ class Store(private val context: Context) {
     ).apply { mkdirs() }
 
     fun loadConversations(): List<Conversation> {
-        if (!conversationsFile.exists()) return emptyList()
+        readConversations(conversationsFile)?.let { return it }
+        val backup = File(conversationsFile.parentFile, conversationsFile.name + ".bak")
+        return readConversations(backup) ?: emptyList()
+    }
+
+    private fun readConversations(file: File): List<Conversation>? {
+        if (!file.exists()) return null
         return runCatching {
-            val array = JSONArray(conversationsFile.readText())
+            val array = JSONArray(file.readText())
             (0 until array.length()).mapNotNull { index ->
                 parseConversation(array.optJSONObject(index))
             }
-        }.getOrElse { emptyList() }
+        }.getOrNull()
     }
 
     fun saveConversations(conversations: List<Conversation>) {
@@ -80,7 +88,14 @@ class Store(private val context: Context) {
                 maxTokens = json.optInt("maxTokens", 2048),
                 contextSize = json.optInt("contextSize", 4096),
                 systemPrompt = json.optString("systemPrompt", DEFAULT_SYSTEM_PROMPT),
+                chatPrompt = json.optString("chatPrompt", DEFAULT_CHAT_PROMPT),
                 deepThinking = json.optBoolean("deepThinking", true),
+                autoMarkImportant = json.optBoolean("autoMarkImportant", true),
+                webSearch = json.optBoolean("webSearch", false),
+                lastConversationId = json.optString("lastConversationId", "").ifBlank { null },
+                defaultMode = runCatching {
+                    ChatMode.valueOf(json.optString("defaultMode", "CHAT"))
+                }.getOrDefault(ChatMode.CHAT),
                 useLocal = json.optBoolean("useLocal", false),
                 localModelPath = json.optString("localModelPath", "").ifBlank { null },
                 localThreads = json.optInt("localThreads", 4),
@@ -143,7 +158,12 @@ class Store(private val context: Context) {
                 put("maxTokens", settings.maxTokens)
                 put("contextSize", settings.contextSize)
                 put("systemPrompt", settings.systemPrompt)
+                put("chatPrompt", settings.chatPrompt)
                 put("deepThinking", settings.deepThinking)
+                put("autoMarkImportant", settings.autoMarkImportant)
+                put("webSearch", settings.webSearch)
+                put("lastConversationId", settings.lastConversationId ?: "")
+                put("defaultMode", settings.defaultMode.name)
                 put("useLocal", settings.useLocal)
                 put("localModelPath", settings.localModelPath ?: "")
                 put("localThreads", settings.localThreads)
@@ -246,6 +266,15 @@ class Store(private val context: Context) {
         )
         conversation.updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
         conversation.systemPrompt = json.optString("systemPrompt", "").ifBlank { null }
+        val modeRaw = json.optString("mode", "")
+        conversation.mode = if (modeRaw.isBlank()) {
+            ChatMode.NOVEL
+        } else {
+            runCatching { ChatMode.valueOf(modeRaw) }.getOrDefault(ChatMode.NOVEL)
+        }
+        conversation.contextMode = runCatching {
+            ContextMode.valueOf(json.optString("contextMode", "ALL"))
+        }.getOrDefault(ContextMode.ALL)
         json.optJSONArray("messages")?.let { messages ->
             for (i in 0 until messages.length()) {
                 val messageJson = messages.optJSONObject(i) ?: continue
@@ -261,6 +290,9 @@ class Store(private val context: Context) {
                 message.reasoningMs = messageJson.optLong("reasoningMs")
                 message.error = messageJson.optString("error", "").ifBlank { null }
                 message.model = messageJson.optString("model")
+                message.important = messageJson.optBoolean("important", false)
+                message.importantAuto = messageJson.optBoolean("importantAuto", false)
+                message.trace = messageJson.optString("trace")
                 message.createdAt = messageJson.optLong("createdAt", System.currentTimeMillis())
                 messageJson.optJSONArray("attachments")?.let { attachments ->
                     for (j in 0 until attachments.length()) {
@@ -275,6 +307,7 @@ class Store(private val context: Context) {
                             path = attachmentJson.optString("path", "").ifBlank { null },
                             text = attachmentJson.optString("text", "").ifBlank { null },
                             mime = attachmentJson.optString("mime", "text/plain"),
+                            ocrText = attachmentJson.optString("ocrText", "").ifBlank { null },
                         )
                     }
                 }
@@ -289,6 +322,8 @@ class Store(private val context: Context) {
         put("title", conversation.title)
         put("updatedAt", conversation.updatedAt)
         put("systemPrompt", conversation.systemPrompt ?: "")
+        put("mode", conversation.mode.name)
+        put("contextMode", conversation.contextMode.name)
         put("messages", JSONArray().apply {
             conversation.messages.forEach { message ->
                 put(JSONObject().apply {
@@ -299,6 +334,9 @@ class Store(private val context: Context) {
                     put("reasoningMs", message.reasoningMs)
                     put("error", message.error ?: "")
                     put("model", message.model)
+                    put("important", message.important)
+                    put("importantAuto", message.importantAuto)
+                    put("trace", message.trace)
                     put("createdAt", message.createdAt)
                     put("attachments", JSONArray().apply {
                         message.attachments.forEach { attachment ->
@@ -309,6 +347,7 @@ class Store(private val context: Context) {
                                 put("path", attachment.path ?: "")
                                 put("text", attachment.text ?: "")
                                 put("mime", attachment.mime)
+                                put("ocrText", attachment.ocrText ?: "")
                             })
                         }
                     })
@@ -317,12 +356,30 @@ class Store(private val context: Context) {
         })
     }
 
+    private val writeLock = Any()
+
     private fun writeAtomic(file: File, text: String) {
         runCatching {
-            val temp = File(file.parentFile, file.name + ".tmp")
-            temp.writeText(text)
-            if (file.exists()) file.delete()
-            temp.renameTo(file)
+            synchronized(writeLock) {
+                val temp = File(file.parentFile, file.name + ".tmp." + System.nanoTime())
+                temp.writeText(text)
+                if (file.exists()) {
+                    runCatching {
+                        file.copyTo(File(file.parentFile, file.name + ".bak"), overwrite = true)
+                    }
+                }
+                try {
+                    Files.move(
+                        temp.toPath(),
+                        file.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE,
+                    )
+                } catch (_: Exception) {
+                    temp.copyTo(file, overwrite = true)
+                    temp.delete()
+                }
+            }
         }
     }
 }

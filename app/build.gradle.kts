@@ -15,8 +15,8 @@ android {
         applicationId = "com.moyu.novel"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.0.3"
 
         if (!project.hasProperty("noNative")) {
             ndk {
@@ -109,6 +109,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

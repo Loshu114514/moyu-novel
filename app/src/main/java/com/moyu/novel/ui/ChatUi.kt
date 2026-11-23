@@ -3,6 +3,8 @@ package com.moyu.novel.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +39,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Check
@@ -47,12 +51,15 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AssistChip
@@ -81,7 +88,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -91,25 +100,39 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.DrawerState
+import com.moyu.novel.AGENT_SUGGESTIONS
 import com.moyu.novel.AttachKind
 import com.moyu.novel.AttachTools
 import com.moyu.novel.Attachment
+import com.moyu.novel.CHAT_SUGGESTIONS
 import com.moyu.novel.ChatMessage
+import com.moyu.novel.ChatMode
 import com.moyu.novel.ChatViewModel
 import com.moyu.novel.Conversation
 import com.moyu.novel.NOVEL_SUGGESTIONS
 import com.moyu.novel.Role
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+
+private fun modeIcon(mode: ChatMode) = when (mode) {
+    ChatMode.CHAT -> Icons.Outlined.ChatBubbleOutline
+    ChatMode.NOVEL -> Icons.Outlined.Bookmark
+    ChatMode.AGENT -> Icons.Outlined.SmartToy
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -130,6 +153,12 @@ fun ChatTopBar(vm: ChatViewModel, onMenu: () -> Unit) {
             }
         },
         actions = {
+            IconButton(onClick = { vm.showHistorySheet = true }) {
+                Icon(Icons.Outlined.History, contentDescription = "历史对话")
+            }
+            IconButton(onClick = { vm.showMemorySheet = true }) {
+                Icon(Icons.Outlined.BookmarkBorder, contentDescription = "上下文记忆")
+            }
             IconButton(onClick = { vm.newChat() }) {
                 Icon(Icons.Outlined.Add, contentDescription = "新建对话")
             }
@@ -340,7 +369,9 @@ fun ChatBody(vm: ChatViewModel) {
     if (conversation.messages.isEmpty()) {
         HomeContent(vm)
     } else {
-        MessageList(vm, conversation)
+        key(conversation.id) {
+            MessageList(vm, conversation)
+        }
     }
 }
 
@@ -366,11 +397,33 @@ private fun HomeContent(vm: ChatViewModel) {
         Spacer(Modifier.height(18.dp))
         Text("你好，我是墨语", fontSize = 25.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
+        val mode = vm.activeConversation?.mode ?: ChatMode.CHAT
         Text(
-            "本地模型 · 云端 API · 为写小说而生",
+            when (mode) {
+                ChatMode.CHAT -> "日常聊天 · 本地模型 · 云端 API"
+                ChatMode.NOVEL -> "小说创作 · 续写 · 人物设定"
+                ChatMode.AGENT -> "本地智能体 · 计算 · 时间 · 记忆 · 联网"
+            },
             color = MoyuTextDim,
             fontSize = 13.sp,
         )
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChatMode.entries.forEach { item ->
+                FilterChip(
+                    selected = mode == item,
+                    onClick = { vm.setMode(item) },
+                    label = { Text(item.label, fontSize = 11.sp) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = modeIcon(item),
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    },
+                )
+            }
+        }
 
         val endpoint = vm.settings.activeEndpoint()
         val setupTarget = when {
@@ -430,7 +483,12 @@ private fun HomeContent(vm: ChatViewModel) {
 
         Spacer(Modifier.height(34.dp))
 
-        NOVEL_SUGGESTIONS.chunked(2).forEach { rowItems ->
+        val suggestions = when (mode) {
+            ChatMode.CHAT -> CHAT_SUGGESTIONS
+            ChatMode.NOVEL -> NOVEL_SUGGESTIONS
+            ChatMode.AGENT -> AGENT_SUGGESTIONS
+        }
+        suggestions.chunked(2).forEach { rowItems ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -515,14 +573,14 @@ private fun MessageList(vm: ChatViewModel, conversation: Conversation) {
 @Composable
 private fun MessageItem(vm: ChatViewModel, message: ChatMessage, isLast: Boolean) {
     if (message.role == Role.USER) {
-        UserMessage(message)
+        UserMessage(vm, message)
     } else {
         AssistantMessage(vm, message, isLast)
     }
 }
 
 @Composable
-private fun UserMessage(message: ChatMessage) {
+private fun UserMessage(vm: ChatViewModel, message: ChatMessage) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.End,
@@ -547,6 +605,23 @@ private fun UserMessage(message: ChatMessage) {
                 }
             }
         }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (message.important) {
+                Text("重要", color = MoyuBlue, fontSize = 10.sp)
+                Spacer(Modifier.width(2.dp))
+            }
+            IconButton(
+                onClick = { vm.toggleImportant(message) },
+                modifier = Modifier.size(28.dp),
+            ) {
+                Icon(
+                    imageVector = if (message.important) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                    contentDescription = if (message.important) "取消重要" else "标记重要",
+                    tint = if (message.important) MoyuBlue else MoyuTextDim,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
     }
 }
 
@@ -557,6 +632,9 @@ private fun AssistantMessage(vm: ChatViewModel, message: ChatMessage, isLast: Bo
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
+        if (message.trace.isNotBlank()) {
+            TraceBlock(message.trace)
+        }
         if (message.reasoning.isNotBlank() || (message.streaming && message.content.isBlank())) {
             ThinkingBlock(message)
         }
@@ -604,6 +682,13 @@ private fun AssistantMessage(vm: ChatViewModel, message: ChatMessage, isLast: Bo
                 if (isLast) {
                     SmallIconButton(Icons.Outlined.Refresh, "重新生成") { vm.regenerate() }
                 }
+                SmallIconButton(
+                    if (message.important) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                    if (message.important) "取消重要" else "标记重要",
+                ) { vm.toggleImportant(message) }
+                if (message.important) {
+                    Text("重要", color = MoyuBlue, fontSize = 10.sp)
+                }
                 Spacer(Modifier.weight(1f))
                 if (message.model.isNotBlank()) {
                     Text(
@@ -633,6 +718,52 @@ private fun SmallIconButton(
             tint = MoyuTextDim,
             modifier = Modifier.size(15.dp),
         )
+    }
+}
+
+@Composable
+private fun TraceBlock(trace: String) {
+    var expanded by remember(trace) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MoyuSurface.copy(alpha = 0.55f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Language,
+                contentDescription = null,
+                tint = MoyuTextDim,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "搜索 / 工具记录",
+                color = MoyuTextDim,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = MoyuTextDim,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Text(
+                trace,
+                color = MoyuTextDim,
+                fontSize = 11.sp,
+                lineHeight = 17.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
     }
 }
 
@@ -688,14 +819,38 @@ private fun ThinkingBlock(message: ChatMessage) {
 }
 
 @Composable
+private fun AttachmentThumb(path: String) {
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val options = BitmapFactory.Options().apply { inSampleSize = 4 }
+                BitmapFactory.decodeFile(path, options)
+            }.getOrNull()
+        }
+    }
+    bitmap?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(34.dp).clip(RoundedCornerShape(6.dp)),
+        )
+    }
+}
+
+@Composable
 private fun AttachmentBadge(attachment: Attachment, onRemove: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(if (attachment.kind == AttachKind.IMAGE) MoyuSurfaceElevated else MoyuSurfaceElevated)
+            .background(MoyuSurfaceElevated)
             .padding(start = 9.dp, end = if (onRemove != null) 2.dp else 9.dp, top = 5.dp, bottom = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (attachment.kind == AttachKind.IMAGE && attachment.path != null) {
+            AttachmentThumb(attachment.path)
+            Spacer(Modifier.width(6.dp))
+        }
         Icon(
             imageVector = if (attachment.kind == AttachKind.IMAGE) Icons.Outlined.Image else Icons.Outlined.Description,
             contentDescription = null,
@@ -711,6 +866,10 @@ private fun AttachmentBadge(attachment: Attachment, onRemove: (() -> Unit)? = nu
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.widthIn(max = 170.dp),
         )
+        if (!attachment.ocrText.isNullOrBlank()) {
+            Spacer(Modifier.width(4.dp))
+            Text("文字", color = MoyuGreen, fontSize = 9.sp)
+        }
         if (onRemove != null) {
             IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
                 Icon(
@@ -765,43 +924,82 @@ fun Composer(vm: ChatViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
             ) {
-                AssistChip(
-                    onClick = { vm.showModelPicker = true },
-                    label = {
-                        Text(
-                            text = vm.activeModelLabel(),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontSize = 12.sp,
-                            modifier = Modifier.widthIn(max = 150.dp),
+                LazyRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item {
+                        AssistChip(
+                            onClick = { vm.showModeSheet = true },
+                            label = {
+                                Text(
+                                    vm.activeConversation?.mode?.label ?: ChatMode.CHAT.label,
+                                    fontSize = 12.sp,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    modeIcon(vm.activeConversation?.mode ?: ChatMode.CHAT),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            },
                         )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Outlined.Memory,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp),
+                    }
+                    item {
+                        AssistChip(
+                            onClick = { vm.showModelPicker = true },
+                            label = {
+                                Text(
+                                    text = vm.activeModelLabel(),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.widthIn(max = 140.dp),
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Memory,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            },
                         )
-                    },
-                )
-                Spacer(Modifier.width(8.dp))
-                if (!vm.settings.useLocal) {
-                    FilterChip(
-                        selected = vm.settings.deepThinking,
-                        onClick = {
-                            vm.updateSettings { it.copy(deepThinking = !it.deepThinking) }
-                        },
-                        label = { Text("深度思考", fontSize = 12.sp) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = if (vm.settings.deepThinking) Icons.Outlined.Check else Icons.Outlined.Bolt,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                            )
-                        },
-                    )
+                    }
+                    item {
+                        FilterChip(
+                            selected = vm.settings.deepThinking,
+                            onClick = {
+                                vm.updateSettings { it.copy(deepThinking = !it.deepThinking) }
+                            },
+                            label = { Text("深度思考", fontSize = 12.sp) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (vm.settings.deepThinking) Icons.Outlined.Check else Icons.Outlined.Bolt,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            },
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = vm.settings.webSearch,
+                            onClick = {
+                                vm.updateSettings { it.copy(webSearch = !it.webSearch) }
+                            },
+                            label = { Text("联网", fontSize = 12.sp) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Language,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            },
+                        )
+                    }
                 }
-                Spacer(Modifier.weight(1f))
                 if (vm.isGenerating) {
                     Text("生成中…", color = MoyuTextDim, fontSize = 11.sp)
                 }
@@ -981,16 +1179,27 @@ fun ModelPickerSheet(vm: ChatViewModel) {
                 )
             }
 
-            TextButton(
-                onClick = {
-                    vm.showModelPicker = false
-                    vm.goTo(com.moyu.novel.Screen.MODELS)
-                },
-                modifier = Modifier.padding(vertical = 8.dp),
-            ) {
-                Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("下载 / 管理本地模型")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = {
+                        vm.showModelPicker = false
+                        vm.goTo(com.moyu.novel.Screen.MODELS)
+                    },
+                    modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                    Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("下载模型")
+                }
+                TextButton(
+                    onClick = {
+                        vm.showModelPicker = false
+                        vm.showLocalModelManager = true
+                    },
+                    modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                    Text("管理本地模型")
+                }
             }
             Spacer(Modifier.height(10.dp))
         }

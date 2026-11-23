@@ -46,8 +46,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.moyu.novel.ApiEndpoint
 import com.moyu.novel.AppSettings
+import com.moyu.novel.ChatMode
 import com.moyu.novel.ChatViewModel
+import com.moyu.novel.DEFAULT_CHAT_PROMPT
 import com.moyu.novel.DEFAULT_SYSTEM_PROMPT
+import com.moyu.novel.DeviceInfo
 import com.moyu.novel.Screen
 import com.moyu.novel.formatBytes
 import java.util.Locale
@@ -63,6 +66,7 @@ fun SettingsScreen(vm: ChatViewModel) {
     var visionModel by remember(endpoint.id) { mutableStateOf(endpoint.visionModel) }
     var keyVisible by remember(endpoint.id) { mutableStateOf(false) }
     var systemPrompt by remember { mutableStateOf(settings.systemPrompt) }
+    var chatPrompt by remember { mutableStateOf(settings.chatPrompt) }
     var confirmClear by remember { mutableStateOf(false) }
     var showSourceDialog by remember { mutableStateOf(false) }
     var sourceName by remember { mutableStateOf("") }
@@ -259,9 +263,11 @@ fun SettingsScreen(vm: ChatViewModel) {
                     }
                 }
                 Text(
-                    "本地推理建议 4096；手机内存 12GB 以上再试 8192。",
+                    "上下文长度 = 模型一次能记住多少内容。2048 大约 1500 字，4096 大约 3000 字，8192 大约 6000 字；" +
+                        "越大越占内存。写长篇时把关键设定标成“重要”，超出部分也不会被忘掉。",
                     color = MoyuTextDim,
                     fontSize = 11.sp,
+                    lineHeight = 17.sp,
                 )
 
                 Text("本地推理线程", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
@@ -288,36 +294,104 @@ fun SettingsScreen(vm: ChatViewModel) {
                         onCheckedChange = { value -> vm.updateSettings { it.copy(deepThinking = value) } },
                     )
                 }
-            }
-        }
 
-        item {
-            Section("创作设定") {
-                OutlinedTextField(
-                    value = systemPrompt,
-                    onValueChange = {
-                        systemPrompt = it
-                        vm.updateSettings { current -> current.copy(systemPrompt = it) }
-                    },
-                    label = { Text("系统提示词") },
-                    minLines = 6,
-                    maxLines = 12,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = {
-                        systemPrompt = DEFAULT_SYSTEM_PROMPT
-                        vm.updateSettings { it.copy(systemPrompt = DEFAULT_SYSTEM_PROMPT) }
-                    }) {
-                        Text("恢复小说创作默认提示词")
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动识别重要对话", fontSize = 14.sp)
+                        Text("含设定/人物/记住等内容会自动收藏", color = MoyuTextDim, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = settings.autoMarkImportant,
+                        onCheckedChange = { value -> vm.updateSettings { it.copy(autoMarkImportant = value) } },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("默认开启联网搜索", fontSize = 14.sp)
+                        Text("也可以随时点输入框上方的“联网”", color = MoyuTextDim, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = settings.webSearch,
+                        onCheckedChange = { value -> vm.updateSettings { it.copy(webSearch = value) } },
+                    )
+                }
+
+                Text("新对话默认模式", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(ChatMode.entries, key = { it.name }) { mode ->
+                        FilterChip(
+                            selected = settings.defaultMode == mode,
+                            onClick = { vm.updateSettings { it.copy(defaultMode = mode) } },
+                            label = { Text(mode.label, fontSize = 12.sp) },
+                        )
                     }
                 }
             }
         }
 
         item {
+            Section("模式提示词") {
+                Text("日常聊天", fontSize = 13.sp, color = MoyuTextDim)
+                OutlinedTextField(
+                    value = chatPrompt,
+                    onValueChange = {
+                        chatPrompt = it
+                        vm.updateSettings { current -> current.copy(chatPrompt = it) }
+                    },
+                    label = { Text("日常聊天提示词") },
+                    minLines = 4,
+                    maxLines = 10,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(onClick = {
+                    chatPrompt = DEFAULT_CHAT_PROMPT
+                    vm.updateSettings { it.copy(chatPrompt = DEFAULT_CHAT_PROMPT) }
+                }) {
+                    Text("恢复日常聊天默认提示词")
+                }
+
+                Text("小说创作", fontSize = 13.sp, color = MoyuTextDim)
+                OutlinedTextField(
+                    value = systemPrompt,
+                    onValueChange = {
+                        systemPrompt = it
+                        vm.updateSettings { current -> current.copy(systemPrompt = it) }
+                    },
+                    label = { Text("小说创作提示词") },
+                    minLines = 6,
+                    maxLines = 12,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(onClick = {
+                    systemPrompt = DEFAULT_SYSTEM_PROMPT
+                    vm.updateSettings { it.copy(systemPrompt = DEFAULT_SYSTEM_PROMPT) }
+                }) {
+                    Text("恢复小说创作默认提示词")
+                }
+                Text(
+                    "智能体模式使用内置工具提示词，不需要在这里改。",
+                    color = MoyuTextDim.copy(alpha = 0.75f),
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        item {
             Section("本地模型") {
                 Text(vm.engineStatus, color = MoyuTextDim, fontSize = 12.sp)
+                Text(
+                    DeviceInfo.localHint(),
+                    color = if (DeviceInfo.isSnapdragon8Gen2OrNewer) MoyuGreen else MoyuTextDim,
+                    fontSize = 11.sp,
+                    lineHeight = 17.sp,
+                )
                 if (vm.localModels.isEmpty()) {
                     Text(
                         "还没有下载模型。点下面的按钮去模型库挑一个 GGUF（推荐 Qwen3.5 4B Q4，约 2.5GB）。",
@@ -353,10 +427,15 @@ fun SettingsScreen(vm: ChatViewModel) {
                         }
                     }
                 }
-                TextButton(onClick = { vm.goTo(Screen.MODELS) }) {
-                    Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("打开模型库")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { vm.goTo(Screen.MODELS) }) {
+                        Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("打开模型库")
+                    }
+                    TextButton(onClick = { vm.showLocalModelManager = true }) {
+                        Text("管理 / 删除 / 导入")
+                    }
                 }
                 Text(
                     "模型来自 hf-mirror.com（HuggingFace 国内镜像），下载后完全离线可用。",
@@ -401,7 +480,7 @@ fun SettingsScreen(vm: ChatViewModel) {
 
         item {
             Section("关于") {
-                Text("墨语 1.1.0", fontSize = 14.sp)
+                Text("墨语 1.0.3", fontSize = 14.sp)
                 Text(
                     "DeepSeek 风格的 AI 小说创作客户端。支持 OpenAI 兼容 API、本地 GGUF 离线推理（llama.cpp）、识图、文件导入、思考过程展示。",
                     color = MoyuTextDim,

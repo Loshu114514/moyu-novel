@@ -1,5 +1,6 @@
 package com.moyu.novel
 
+import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -7,6 +8,17 @@ import androidx.compose.runtime.setValue
 import java.util.UUID
 
 enum class Role { USER, ASSISTANT, SYSTEM }
+
+enum class ChatMode(val label: String) {
+    CHAT("日常聊天"),
+    NOVEL("小说创作"),
+    AGENT("本地智能体"),
+}
+
+enum class ContextMode(val label: String) {
+    ALL("全部对话"),
+    IMPORTANT("重要对话"),
+}
 
 enum class AttachKind { IMAGE, TEXT }
 
@@ -17,6 +29,7 @@ data class Attachment(
     val path: String? = null,
     val text: String? = null,
     val mime: String = "text/plain",
+    val ocrText: String? = null,
 )
 
 class ChatMessage(
@@ -32,6 +45,9 @@ class ChatMessage(
     var streaming by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var model by mutableStateOf("")
+    var important by mutableStateOf(false)
+    var importantAuto by mutableStateOf(false)
+    var trace by mutableStateOf("")
     val attachments = mutableStateListOf<Attachment>()
     var createdAt: Long = System.currentTimeMillis()
 }
@@ -43,6 +59,8 @@ class Conversation(
     var title by mutableStateOf(title)
     var updatedAt by mutableStateOf(System.currentTimeMillis())
     var systemPrompt: String? = null
+    var mode by mutableStateOf(ChatMode.CHAT)
+    var contextMode by mutableStateOf(ContextMode.ALL)
     val messages = mutableStateListOf<ChatMessage>()
 
     fun lastUserMessage(): ChatMessage? = messages.lastOrNull { it.role == Role.USER }
@@ -81,7 +99,12 @@ data class AppSettings(
     val modelSources: List<ModelSource> = defaultModelSources(),
     val activeSourceId: String = "hf-mirror",
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
+    val chatPrompt: String = DEFAULT_CHAT_PROMPT,
     val deepThinking: Boolean = true,
+    val autoMarkImportant: Boolean = true,
+    val webSearch: Boolean = false,
+    val lastConversationId: String? = null,
+    val defaultMode: ChatMode = ChatMode.CHAT,
     val useLocal: Boolean = false,
     val localModelPath: String? = null,
     val localThreads: Int = 4,
@@ -147,6 +170,20 @@ const val DEFAULT_SYSTEM_PROMPT =
         "3. 场景具体、节奏明快，多用动作、对话与细节推进剧情，避免空洞总结。\n" +
         "4. 用户给出设定或片段时，先自然衔接再展开；用户要求续写时，从停下的地方接着写。\n" +
         "5. 除非用户明确要求，不要擅自结束故事或写“全文完”。"
+
+val CHAT_SUGGESTIONS = listOf(
+    "帮我把这段话改得更自然",
+    "今天适合做点什么？",
+    "给我讲一个短一点的冷知识",
+    "帮我列一个周末计划",
+)
+
+val AGENT_SUGGESTIONS = listOf(
+    "帮我算一下 128 × 37",
+    "现在几点了？",
+    "记住：主角叫林渊，性格冷静",
+    "搜索一下今天有哪些科技新闻",
+)
 
 val NOVEL_SUGGESTIONS = listOf(
     "帮我写一个玄幻小说的开篇，主角是个被家族抛弃的少年",
@@ -264,4 +301,35 @@ fun modelBillions(id: String): Double? {
 fun sourceSizeLabel(id: String): String {
     val billions = modelBillions(id) ?: return ""
     return if (billions < 1) "${billions}B" else "${billions.toInt()}B"
+}
+
+
+const val DEFAULT_CHAT_PROMPT =
+    "你是一个可靠、直接的中文助手。回答准确、自然，不说客套话；不确定时直说。" +
+        "如果用户给了工具结果或搜索结果，优先依据它们回答，并标明信息来源。"
+
+const val AGENT_SYSTEM_PROMPT =
+    "你是运行在手机本地的智能体。你可以使用应用提供的工具结果（计算器、时间、记忆、联网搜索）。" +
+        "工具结果会以「【工具结果】」开头提供给你。优先依据工具结果回答，不要编造工具没有返回的信息。" +
+        "回答简洁，必要时说明你用了哪个工具。"
+
+object DeviceInfo {
+    val soc: String
+        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Build.SOC_MODEL.ifBlank { Build.HARDWARE }
+        } else {
+            Build.HARDWARE
+        }
+
+    val isSnapdragon8Gen2OrNewer: Boolean
+        get() {
+            val value = soc.lowercase()
+            return listOf("sm8550", "sm8650", "sm8750", "sm8850", "qcs8550").any { value.contains(it) }
+        }
+
+    fun localHint(): String = if (isSnapdragon8Gen2OrNewer) {
+        "当前处理器：$soc（骁龙 8 Gen 2 级别或更新，适合跑本地模型）"
+    } else {
+        "当前处理器：$soc。推荐骁龙 8 Gen 2 及以上；其他处理器也能跑，但 4B 模型会更慢。"
+    }
 }

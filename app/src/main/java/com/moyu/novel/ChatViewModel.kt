@@ -28,6 +28,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val api = ChatApi()
     private val hub = ModelHub(app, store)
     private val engine = LocalEngine(app)
+    private val webSearch = WebSearch()
+    private val tools = OnDeviceTools(app, webSearch)
 
     val recommendedModels: List<RecommendedModel> get() = hub.recommended
 
@@ -47,6 +49,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     var screen by mutableStateOf(Screen.CHAT)
     var showModelPicker by mutableStateOf(false)
+    var showLocalModelManager by mutableStateOf(false)
+    var showMemorySheet by mutableStateOf(false)
+    var showHistorySheet by mutableStateOf(false)
+    var showModeSheet by mutableStateOf(false)
     val pendingAttachments = mutableStateListOf<Attachment>()
     val localModels = mutableStateListOf<LocalModel>()
     val downloadProgress = mutableStateMapOf<Long, DownloadProgress>()
@@ -88,9 +94,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val saved = store.loadConversations().sortedByDescending { it.updatedAt }
         conversations.addAll(saved)
         if (conversations.isEmpty()) {
-            createConversation()
+            createConversation(settings.defaultMode)
         } else {
-            activeId = conversations.first().id
+            val restored = settings.lastConversationId
+            activeId = conversations.firstOrNull { it.id == restored }?.id
+                ?: conversations.first().id
+        }
+        if (settings.autoMarkImportant) {
+            conversations.forEach { conversation ->
+                conversation.messages.filter { it.role == Role.USER }.forEach { message ->
+                    autoMarkImportant(message, conversation)
+                }
+            }
         }
         refreshLocalModels()
         downloads = store.loadDownloads().filter { record ->
@@ -116,23 +131,59 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------------------------------------------------------------- conversations
 
-    private fun createConversation(): Conversation {
+    private fun createConversation(mode: ChatMode = settings.defaultMode): Conversation {
         val conversation = Conversation()
+        conversation.mode = mode
         conversations.add(0, conversation)
         activeId = conversation.id
+        rememberActive(conversation.id)
         return conversation
     }
 
-    fun newChat() {
+    private fun rememberActive(id: String) {
+        if (settings.lastConversationId != id) {
+            settings = settings.copy(lastConversationId = id)
+            saveSettingsSoon()
+        }
+    }
+
+    fun newChat(mode: ChatMode? = null) {
         if (isGenerating) stop()
         val current = activeConversation
+        if (mode != null && current != null && current.messages.isEmpty()) {
+            current.mode = mode
+            rememberActive(current.id)
+            persistSoon()
+            screen = Screen.CHAT
+            return
+        }
         if (current != null && current.messages.isEmpty()) {
             screen = Screen.CHAT
             return
         }
-        createConversation()
+        createConversation(mode ?: settings.defaultMode)
         localSession = null
         screen = Screen.CHAT
+        persistSoon()
+    }
+
+    fun setMode(mode: ChatMode) {
+        showModeSheet = false
+        val current = activeConversation
+        if (current == null) {
+            createConversation(mode)
+            return
+        }
+        if (current.messages.isEmpty()) {
+            current.mode = mode
+            rememberActive(current.id)
+            persistSoon()
+            return
+        }
+        createConversation(mode)
+        localSession = null
+        screen = Screen.CHAT
+        toast = "已新建「${mode.label}」对话"
         persistSoon()
     }
 
@@ -143,6 +194,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (isGenerating) stop()
         activeId = id
+        rememberActive(id)
         localSession = null
         screen = Screen.CHAT
     }
@@ -156,6 +208,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val next = conversations.getOrNull(index) ?: conversations.getOrNull(index - 1)
             if (next != null) {
                 activeId = next.id
+                rememberActive(next.id)
             } else {
                 createConversation()
             }
@@ -193,10 +246,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val userMessage = ChatMessage(role = Role.USER, content = content)
         userMessage.attachments.addAll(attachments)
         conversation.messages.add(userMessage)
+        autoMarkImportant(userMessage, conversation)
         if (conversation.messages.count { it.role == Role.USER } == 1) {
             conversation.title = makeTitle(content.ifBlank { attachments.firstOrNull()?.name ?: "图片对话" })
         }
         conversation.updatedAt = System.currentTimeMillis()
+        rememberActive(conversation.id)
+        if (conversations.firstOrNull()?.id != conversation.id) {
+            conversations.remove(conversation)
+            conversations.add(0, conversation)
+        }
         persistSoon()
         startReply(conversation)
     }
@@ -223,10 +282,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         genJob = viewModelScope.launch {
             try {
+                val userMessage = conversation.messages.getOrNull(conversation.messages.size - 2)
+                    ?: throw IllegalStateException("消息状态异常，请重新发送")
+                assistant.trace = "正在准备上下文…"
+                val turn = prepareTurnContext(conversation, userMessage)
+                assistant.trace = turn.trace
                 if (settings.useLocal) {
-                    generateLocal(conversation, assistant)
+                    generateLocal(conversation, assistant, turn)
                 } else {
-                    generateApi(conversation, assistant)
+                    generateApi(conversation, assistant, turn)
                 }
             } catch (cancelled: CancellationException) {
                 // user pressed stop
@@ -259,17 +323,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         genJob?.cancel()
     }
 
-    private suspend fun generateApi(conversation: Conversation, assistant: ChatMessage) {
+    private suspend fun generateApi(conversation: Conversation, assistant: ChatMessage, turn: TurnContext) {
         val endpoint = settings.activeEndpoint()
         if (endpoint.baseUrl.isBlank()) throw IllegalStateException("还没有配置 API 地址：设置 → API 服务")
         if (endpoint.apiKey.isBlank()) throw IllegalStateException("还没有填写 API Key：设置 → API 服务")
-        val history = conversation.messages.dropLast(1).toList()
+        val currentUser = conversation.messages.getOrNull(conversation.messages.size - 2)
+        val history = if (currentUser != null) turn.history + currentUser else turn.history
         val hasImages = history.any { message -> message.attachments.any { it.kind == AttachKind.IMAGE } }
-        val model = if (hasImages && endpoint.visionModel.isNotBlank()) endpoint.visionModel else endpoint.model
+        if (hasImages && endpoint.visionModel.isBlank()) {
+            throw IllegalStateException("当前 API 没有配置视觉模型，无法识图。请在 设置 → API 服务 填写视觉模型（例如 qwen3-vl-plus / glm-4.5v / gpt-4o）。")
+        }
+        val model = if (hasImages) endpoint.visionModel else endpoint.model
         if (model.isBlank()) throw IllegalStateException("还没有填写模型名称：设置 → API 服务")
         assistant.model = model
 
-        val messages = withContext(Dispatchers.IO) { buildApiMessages(settings.systemPrompt, history) }
+        val messages = withContext(Dispatchers.IO) { buildApiMessages(turn.system, history) }
         var reasoningStarted = false
 
         api.stream(
@@ -327,7 +395,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    private suspend fun generateLocal(conversation: Conversation, assistant: ChatMessage) = withContext(Dispatchers.Default) {
+    private suspend fun generateLocal(
+        conversation: Conversation,
+        assistant: ChatMessage,
+        turn: TurnContext,
+    ) = withContext(Dispatchers.Default) {
         val path = settings.localModelPath ?: localModels.firstOrNull()?.path
             ?: throw IllegalStateException("还没有本地模型：模型 → 模型库下载")
         if (!File(path).exists()) throw IllegalStateException("本地模型文件不见了，请重新下载")
@@ -346,12 +418,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             localSession = null
         }
 
-        val system = settings.systemPrompt
+        val system = turn.system
         val contextSize = settings.contextSize
-        val history = conversation.messages.dropLast(2).toList()
+        val history = turn.history
         val userMessage = conversation.messages.getOrNull(conversation.messages.size - 2)
             ?: throw IllegalStateException("消息状态异常，请重新发送")
-        val userText = localPromptText(userMessage)
+        val userText = buildLocalUserText(userMessage, path)
         val userTokens = estimateTokens(userText)
         val nearFull = localSession != null && engine.usedTokens() + userTokens + 256 > contextSize
         val session = localSession
@@ -472,6 +544,148 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private data class TurnContext(
+        val system: String,
+        val history: List<ChatMessage>,
+        val trace: String,
+    )
+
+    private suspend fun prepareTurnContext(conversation: Conversation, userMessage: ChatMessage): TurnContext {
+        var system = systemPromptFor(conversation)
+        var trace = ""
+        var toolContext = ""
+
+        if (conversation.mode == ChatMode.AGENT) {
+            val memories = conversation.messages.filter { it.important && it.content.isNotBlank() }.map { it.content }
+            val result = tools.prepare(userMessage.content, memories, settings.webSearch)
+            if (result != null) {
+                toolContext = result.context
+                trace = result.trace
+            }
+        } else if (settings.webSearch) {
+            val result = searchOnly(userMessage.content)
+            if (result != null) {
+                toolContext = result.context
+                trace = result.trace
+            }
+        }
+
+        if (conversation.contextMode == ContextMode.IMPORTANT || conversation.mode == ChatMode.AGENT) {
+            val memory = memoryBlock(conversation)
+            if (memory.isNotBlank()) {
+                system = system.trimEnd() + "\n\n" + memory
+            }
+        }
+        if (toolContext.isNotBlank()) {
+            system = system.trimEnd() + "\n\n" + toolContext
+        }
+
+        val ocrCount = userMessage.attachments.count {
+            it.kind == AttachKind.IMAGE && !it.ocrText.isNullOrBlank()
+        }
+        if (ocrCount > 0) {
+            trace = listOf(trace, "图片 OCR：已提取 $ocrCount 张图片文字").filter { it.isNotBlank() }.joinToString("\n")
+        }
+
+        val prior = conversation.messages.dropLast(2)
+        val history = when (conversation.contextMode) {
+            ContextMode.ALL -> prior
+            ContextMode.IMPORTANT -> prior.takeLast(4)
+        }
+        return TurnContext(system = system, history = history, trace = trace)
+    }
+
+    private suspend fun searchOnly(text: String): ToolResult? {
+        val query = text.trim().take(120)
+        if (query.isBlank()) return null
+        val results = runCatching { webSearch.search(query) }.getOrNull().orEmpty()
+        if (results.isEmpty()) {
+            return ToolResult("【工具结果 · 联网搜索】\n没有检索到结果。", "联网搜索：无结果")
+        }
+        val block = results.joinToString("\n\n") { result ->
+            "${result.title}\n${result.url}\n${result.snippet}"
+        }
+        return ToolResult(
+            context = "【工具结果 · 联网搜索】\n$block",
+            trace = "联网搜索：$query（${results.size} 条）",
+        )
+    }
+
+    private fun systemPromptFor(conversation: Conversation): String {
+        conversation.systemPrompt?.takeIf { it.isNotBlank() }?.let { return it }
+        return when (conversation.mode) {
+            ChatMode.CHAT -> settings.chatPrompt
+            ChatMode.NOVEL -> settings.systemPrompt
+            ChatMode.AGENT -> AGENT_SYSTEM_PROMPT
+        }
+    }
+
+    private fun memoryBlock(conversation: Conversation): String {
+        val items = conversation.messages
+            .dropLast(2)
+            .filter { it.important && it.content.isNotBlank() }
+            .takeLast(10)
+        if (items.isEmpty()) return ""
+        val lines = items.joinToString("\n") { message ->
+            val role = if (message.role == Role.USER) "用户" else "助手"
+            "- $role：${message.content.take(300)}"
+        }
+        return "【长期记忆（重要对话）】\n$lines"
+    }
+
+    private fun autoMarkImportant(message: ChatMessage, conversation: Conversation) {
+        if (!settings.autoMarkImportant || message.role != Role.USER) return
+        val text = message.content
+        val triggers = listOf(
+            "记住", "设定", "人物", "世界观", "大纲", "背景", "重要", "不要忘",
+            "主角", "配角", "伏笔", "关系", "必须", "禁止", "名字", "地图", "境界",
+        )
+        val firstUser = conversation.messages.count { it.role == Role.USER } == 1
+        if (firstUser || text.length >= 80 || triggers.any { text.contains(it) }) {
+            message.important = true
+            message.importantAuto = true
+        }
+    }
+
+    fun toggleImportant(message: ChatMessage) {
+        message.important = !message.important
+        message.importantAuto = false
+        persistSoon()
+    }
+
+    fun setContextMode(mode: ContextMode) {
+        val conversation = activeConversation ?: return
+        conversation.contextMode = mode
+        localSession = null
+        persistSoon()
+    }
+
+    fun deleteMemoryMessage(message: ChatMessage) {
+        val conversation = activeConversation ?: return
+        conversation.messages.remove(message)
+        localSession = null
+        persistSoon()
+    }
+
+    private fun buildLocalUserText(message: ChatMessage, modelPath: String): String {
+        val builder = StringBuilder(localPromptText(message))
+        val images = message.attachments.count { it.kind == AttachKind.IMAGE }
+        val ocr = message.attachments.count { it.kind == AttachKind.IMAGE && !it.ocrText.isNullOrBlank() }
+        if (images > 0 && ocr == 0) {
+            builder.append("\n\n【图片提示】用户发来了 $images 张图片，但本地模型不能直接看图，OCR 也没有识别出文字。" +
+                "请告诉用户可以切换到在线视觉模型，或换一张文字更清晰的图片。")
+        }
+        val isQwen = (modelPath.substringAfterLast('/') + " " + engine.description())
+            .lowercase()
+            .contains("qwen")
+        if (isQwen) {
+            builder.append(if (settings.deepThinking) "\n\n/think" else "\n\n/no_think")
+        } else if (!settings.deepThinking) {
+            builder.append("\n\n请直接回答，不要输出思考过程。")
+        }
+        return builder.toString()
+    }
+
     private fun maybeStreamSave() {
         val now = System.currentTimeMillis()
         if (now - lastStreamSave > 5000) {
@@ -485,9 +699,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val blocks = message.attachments
             .filter { it.kind == AttachKind.TEXT }
             .map { "【文件：${it.name}】\n${it.text.orEmpty().take(30_000)}\n【文件结束】" }
-        if (blocks.isNotEmpty()) {
+        val images = message.attachments
+            .filter { it.kind == AttachKind.IMAGE && !it.ocrText.isNullOrBlank() }
+            .map { "【图片文字：${it.name}】\n${it.ocrText!!.take(6000)}" }
+        val allBlocks = blocks + images
+        if (allBlocks.isNotEmpty()) {
             if (builder.isNotEmpty()) builder.append("\n\n")
-            builder.append(blocks.joinToString("\n\n").take(60_000))
+            builder.append(allBlocks.joinToString("\n\n").take(60_000))
         }
         return builder.toString().trim()
     }
@@ -717,6 +935,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun importLocalModel(uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val original = AttachTools.displayName(app, uri)
+                    if (!original.endsWith(".gguf", ignoreCase = true)) {
+                        throw IOException("只支持 .gguf 模型文件")
+                    }
+                    val safe = original.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "model.gguf" }
+                    var target = File(store.modelsDir, safe)
+                    if (target.exists()) {
+                        target = File(store.modelsDir, System.currentTimeMillis().toString() + "_" + safe)
+                    }
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw IOException("无法读取这个文件")
+                    target
+                }
+            }
+            result.onSuccess { file ->
+                refreshLocalModels()
+                toast = "已导入模型：${file.name}"
+            }.onFailure {
+                toast = "导入失败：${it.message ?: "未知错误"}"
+            }
+        }
+    }
+
     fun searchHub(query: String) {
         hubLoading = true
         hubError = null
@@ -758,13 +1004,44 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val result = withContext(Dispatchers.IO) {
                 runCatching { AttachTools.attachmentFromUri(app, uri) }
             }
-            result.onSuccess { pendingAttachments += it }
-                .onFailure { toast = it.message ?: "读取附件失败" }
+            result.onSuccess { attachment ->
+                if (attachment.kind == AttachKind.IMAGE && imageAttachmentCount() >= 4) {
+                    toast = "最多同时发送 4 张图片"
+                    return@onSuccess
+                }
+                pendingAttachments += attachment
+                if (attachment.kind == AttachKind.IMAGE) {
+                    runOcr(attachment)
+                }
+            }.onFailure { toast = it.message ?: "读取附件失败" }
         }
     }
 
     fun attachCamera(file: File) {
-        pendingAttachments += AttachTools.cameraAttachment(app, file)
+        if (imageAttachmentCount() >= 4) {
+            toast = "最多同时发送 4 张图片"
+            return
+        }
+        val attachment = AttachTools.cameraAttachment(app, file)
+        pendingAttachments += attachment
+        runOcr(attachment)
+    }
+
+    private fun imageAttachmentCount(): Int =
+        pendingAttachments.count { it.kind == AttachKind.IMAGE }
+
+    private fun runOcr(attachment: Attachment) {
+        val path = attachment.path ?: return
+        viewModelScope.launch {
+            val text = OcrTools.recognize(app, path)
+            if (!text.isNullOrBlank()) {
+                val index = pendingAttachments.indexOfFirst { it.id == attachment.id }
+                if (index >= 0) {
+                    pendingAttachments[index] = attachment.copy(ocrText = text)
+                    toast = "已识别图片里的文字"
+                }
+            }
+        }
     }
 
     fun removeAttachment(id: String) {
@@ -830,7 +1107,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             conversations.add(index, conversation)
             if (index == 0) firstId = conversation.id
         }
-        firstId?.let { activeId = it }
+        firstId?.let {
+            activeId = it
+            rememberActive(it)
+        }
         importPreview = emptyList()
         importError = null
         localSession = null
