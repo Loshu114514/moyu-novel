@@ -106,6 +106,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     autoMarkImportant(message, conversation)
                 }
             }
+            persistSoon()
         }
         refreshLocalModels()
         downloads = store.loadDownloads().filter { record ->
@@ -607,7 +608,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         return ToolResult(
             context = "【工具结果 · 联网搜索】\n$block",
-            trace = "联网搜索：$query（${results.size} 条）",
+            trace = "联网搜索：$query（${results.size} 条）\n" +
+                results.joinToString("\n") { "· ${it.title} — ${it.url}" },
         )
     }
 
@@ -1033,7 +1035,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun runOcr(attachment: Attachment) {
         val path = attachment.path ?: return
         viewModelScope.launch {
-            val text = OcrTools.recognize(app, path)
+            val text = runCatching { OcrTools.recognize(app, path) }.getOrNull()
             if (!text.isNullOrBlank()) {
                 val index = pendingAttachments.indexOfFirst { it.id == attachment.id }
                 if (index >= 0) {

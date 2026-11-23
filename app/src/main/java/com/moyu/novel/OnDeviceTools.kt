@@ -38,7 +38,7 @@ class OnDeviceTools(
         }
 
         if (text.contains("电量") || text.contains("电池")) {
-            batteryStatus()?.let {
+            runCatching { batteryStatus() }.getOrNull()?.let {
                 parts += "【工具结果 · 设备电量】\n$it"
                 traces += "电量：$it"
             }
@@ -71,7 +71,8 @@ class OnDeviceTools(
                     "${result.title}\n${result.url}\n${result.snippet}"
                 }
                 parts += "【工具结果 · 联网搜索】\n$block"
-                traces += "联网搜索：$query（${results.size} 条）"
+                traces += "联网搜索：$query（${results.size} 条）\n" +
+                    results.joinToString("\n") { "· ${it.title} — ${it.url}" }
             }
         }
 
